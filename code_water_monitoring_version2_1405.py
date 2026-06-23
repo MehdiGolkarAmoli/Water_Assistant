@@ -115,6 +115,31 @@ if 'mean_data' not in st.session_state:
 if 'download_summary' not in st.session_state:
     # simple end-user facing summary: {PARAM_TURBIDITY: (downloaded, available), ...}
     st.session_state.download_summary = {}
+if 'last_progress_heartbeat' not in st.session_state:
+    # Updated every time processing makes measurable progress. Used to detect
+    # a "stuck" processing_in_progress flag left over from a dropped
+    # connection (the Streamlit session is killed mid-run, so the normal
+    # finally: block that resets the flag never executes).
+    st.session_state.last_progress_heartbeat = None
+
+# --- Stale-processing watchdog --------------------------------------------
+# If the app thinks a run is "in progress" but no heartbeat has been
+# recorded for longer than this, the previous run almost certainly died
+# from a dropped browser/server connection rather than still being active
+# (the heartbeat is refreshed at fine granularity — every retry attempt and
+# every downloaded chunk — so a genuinely alive run never goes this long
+# without updating it). Auto-clear the flag so the user is never
+# permanently locked out of the buttons.
+STALE_PROCESSING_TIMEOUT_SECONDS = 45
+
+if 'show_recovery_notice' not in st.session_state:
+    st.session_state.show_recovery_notice = False
+
+if st.session_state.processing_in_progress:
+    heartbeat = st.session_state.last_progress_heartbeat
+    if heartbeat is None or (time.time() - heartbeat) > STALE_PROCESSING_TIMEOUT_SECONDS:
+        st.session_state.processing_in_progress = False
+        st.session_state.show_recovery_notice = True
 
 
 # =============================================================================
@@ -335,6 +360,11 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
     last_error = None
 
     for attempt in range(MAX_RETRIES):
+        # Refresh the heartbeat at the start of every attempt — this is the
+        # finest-grained unit of real work, much smaller than a full month,
+        # so the stale-processing watchdog (see session-state init) never
+        # mistakes a slow-but-alive download for an abandoned one.
+        st.session_state.last_progress_heartbeat = time.time()
         try:
             url = image.select(band).getDownloadURL({
                 'scale': scale, 'region': region, 'format': 'GEO_TIFF', 'bands': [band]
@@ -354,6 +384,7 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
                         if chunk:
                             f.write(chunk)
                             downloaded_size += len(chunk)
+                            st.session_state.last_progress_heartbeat = time.time()
 
                 if downloaded_size < MIN_FILE_SIZE:
                     last_error = f"File too small ({downloaded_size} bytes)"
@@ -689,6 +720,9 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             overall_fraction = offset + (fraction_done_within_param * 0.5)
             progress_bar.progress(min(overall_fraction, 1.0))
             progress_label.markdown(f"**{label}** — {int(min(fraction_done_within_param, 1.0) * 100)}٪")
+            # Refresh the heartbeat so the stale-processing watchdog knows
+            # this run is genuinely still active, not abandoned mid-flight.
+            st.session_state.last_progress_heartbeat = time.time()
         return update
 
     # --- Turbidity (NDTI) ---
@@ -979,6 +1013,14 @@ def main():
         "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای Sentinel-2."
     )
 
+    if st.session_state.show_recovery_notice:
+        st.warning(
+            "⚠️ به نظر می‌رسد پایش قبلی به دلیل قطعی اینترنت یا اتصال متوقف شده بود. "
+            "وضعیت بازنشانی شد — می‌توانید با دکمه «ادامه پایش» بدون از دست رفتن پیشرفت قبلی ادامه دهید، "
+            "یا یک پایش جدید شروع کنید."
+        )
+        st.session_state.show_recovery_notice = False
+
     # Initialize Earth Engine
     ee_ok, ee_msg = initialize_earth_engine()
     if not ee_ok:
@@ -1009,7 +1051,7 @@ def main():
     if st.session_state.processing_in_progress:
         st.sidebar.warning("⏳ در حال پردازش...")
 
-    if st.sidebar.button("🗑️ پاک کردن نتایج", disabled=st.session_state.processing_in_progress):
+    if st.sidebar.button("🗑️ پاک کردن نتایج"):
         st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
@@ -1019,6 +1061,7 @@ def main():
         st.session_state.processing_config = None
         st.session_state.processing_complete = False
         st.session_state.processing_in_progress = False
+        st.session_state.last_progress_heartbeat = None
         st.rerun()
 
     # ==========================================================================
@@ -1187,6 +1230,11 @@ def main():
     if should_process:
         config = st.session_state.processing_config
         st.session_state.processing_in_progress = True
+        # Seed the heartbeat now, before any Earth Engine calls — those
+        # round-trips (e.g. checking image availability) happen before the
+        # first download chunk and would otherwise look like silence to the
+        # watchdog.
+        st.session_state.last_progress_heartbeat = time.time()
 
         aoi = ee.Geometry.Polygon([[tuple(c) for c in config['polygon_coords']]])
 
