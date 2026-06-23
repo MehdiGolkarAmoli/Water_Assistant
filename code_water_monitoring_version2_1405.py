@@ -68,7 +68,7 @@ PARAM_CHLOROPHYLL = "Chlorophyll Index"
 
 # Chlorophyll visualization range
 CHL_VMIN = 2
-CHL_VMAX = 100
+CHL_VMAX = 50
 
 # Download settings
 MAX_RETRIES = 3
@@ -115,31 +115,9 @@ if 'mean_data' not in st.session_state:
 if 'download_summary' not in st.session_state:
     # simple end-user facing summary: {PARAM_TURBIDITY: (downloaded, available), ...}
     st.session_state.download_summary = {}
-if 'last_progress_heartbeat' not in st.session_state:
-    # Updated every time processing makes measurable progress. Used to detect
-    # a "stuck" processing_in_progress flag left over from a dropped
-    # connection (the Streamlit session is killed mid-run, so the normal
-    # finally: block that resets the flag never executes).
-    st.session_state.last_progress_heartbeat = None
-
-# --- Stale-processing watchdog --------------------------------------------
-# If the app thinks a run is "in progress" but no heartbeat has been
-# recorded for longer than this, the previous run almost certainly died
-# from a dropped browser/server connection rather than still being active
-# (the heartbeat is refreshed at fine granularity — every retry attempt and
-# every downloaded chunk — so a genuinely alive run never goes this long
-# without updating it). Auto-clear the flag so the user is never
-# permanently locked out of the buttons.
-STALE_PROCESSING_TIMEOUT_SECONDS = 45
-
-if 'show_recovery_notice' not in st.session_state:
-    st.session_state.show_recovery_notice = False
-
-if st.session_state.processing_in_progress:
-    heartbeat = st.session_state.last_progress_heartbeat
-    if heartbeat is None or (time.time() - heartbeat) > STALE_PROCESSING_TIMEOUT_SECONDS:
-        st.session_state.processing_in_progress = False
-        st.session_state.show_recovery_notice = True
+if 'resume_after_interruption' not in st.session_state:
+    # True when a previous run was interrupted and can be resumed
+    st.session_state.resume_after_interruption = False
 
 
 # =============================================================================
@@ -360,11 +338,6 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
     last_error = None
 
     for attempt in range(MAX_RETRIES):
-        # Refresh the heartbeat at the start of every attempt — this is the
-        # finest-grained unit of real work, much smaller than a full month,
-        # so the stale-processing watchdog (see session-state init) never
-        # mistakes a slow-but-alive download for an abandoned one.
-        st.session_state.last_progress_heartbeat = time.time()
         try:
             url = image.select(band).getDownloadURL({
                 'scale': scale, 'region': region, 'format': 'GEO_TIFF', 'bands': [band]
@@ -384,7 +357,6 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
                         if chunk:
                             f.write(chunk)
                             downloaded_size += len(chunk)
-                            st.session_state.last_progress_heartbeat = time.time()
 
                 if downloaded_size < MIN_FILE_SIZE:
                     last_error = f"File too small ({downloaded_size} bytes)"
@@ -572,26 +544,26 @@ def generate_thumbnails(wq_path, rgb_path, month_name, parameter_type, max_size=
 # =============================================================================
 def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir,
                               cloudy_pixel_percentage=CLOUD_THRESHOLD, scale=10,
-                              progress_callback=None, resume=False):
+                              resume=False):
     """
     Run the full pipeline for one parameter (NDTI or Chlorophyll-a):
     cloud filtering -> snow masking -> waterbody extraction -> index calculation
     -> download -> thumbnail generation.
 
-    RESUME / CONNECTION-DROP SAFETY:
-    Every month's outcome (downloaded paths or a no-data/failed status) is
-    written into st.session_state immediately after that month finishes, not
-    only at the end of the function. This means that if the browser tab loses
-    its connection, the process is stopped, or the app reruns mid-way, the
-    months already completed are not lost — they are recorded in session
-    state and, when resume=True, are skipped entirely on the next run rather
-    than being re-downloaded from scratch.
+    Key resilience behaviours (adapted from old version):
+    - Per-month session state writes: progress is preserved after every month so
+      that a connection drop never discards completed work.
+    - Resume logic: when resume=True, months already present in
+      st.session_state.downloaded_months[parameter_type] (and whose files are
+      still valid on disk) are skipped entirely.
+    - File-level cache: download_monthly_data() validates existing GeoTIFFs on
+      disk before attempting a new download — so cached files survive page
+      reloads even without session state.
+    - EE server calls (.size().getInfo(), get_monthly_composite) are wrapped in
+      try/except so a transient network error on one month does not crash the
+      whole pipeline; the month is marked STATUS_FAILED and processing continues.
 
-    progress_callback(fraction), if provided, is called with a float in [0, 1]
-    representing how far this single parameter's processing has progressed
-    (covers both the per-month download loop and the thumbnail-generation loop).
-
-    Returns: (results_list, downloaded_count, available_count)
+    Returns: (results_list, mean_data_dict, downloaded_count, available_count)
     No technical logs are written to the UI; this function is silent.
     """
     param_short = "turbidity" if parameter_type == PARAM_TURBIDITY else "chlorophyll"
@@ -600,6 +572,9 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
     end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
     total_months = (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month)
 
+    # ------------------------------------------------------------------
+    # Build the GEE collection (server-side — no network download yet)
+    # ------------------------------------------------------------------
     wq_collection = create_water_quality_collection(
         aoi, start_date, end_date, parameter_type, cloudy_pixel_percentage
     )
@@ -610,156 +585,181 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
         month = (start_dt.month - 1 + month_index) % 12 + 1
         month_infos.append({'month_name': f"{year}-{month:02d}", 'year': year, 'month': month})
 
-    # Reserve 85% of this parameter's progress for fetching/downloading months,
-    # and 15% for generating the visual thumbnails afterward.
-    n_months = max(len(month_infos), 1)
-    DOWNLOAD_SHARE = 0.85
+    # ------------------------------------------------------------------
+    # FIX A: Restore already-downloaded months from session state (resume)
+    # ------------------------------------------------------------------
+    # Ensure the nested dict for this parameter exists in session state
+    if not isinstance(st.session_state.downloaded_months.get(parameter_type), dict):
+        st.session_state.downloaded_months[parameter_type] = {}
+    if not isinstance(st.session_state.month_statuses.get(parameter_type), dict):
+        st.session_state.month_statuses[parameter_type] = {}
 
-    # Pull any progress already recorded in session state from a previous,
-    # interrupted run of this exact parameter.
     downloaded_months = {}
-    month_statuses = {}
-    if resume:
-        for month_name, paths in st.session_state.downloaded_months.get(parameter_type, {}).items():
-            wq_valid, _ = validate_geotiff_file(paths.get('wq_index', ''), 1)
-            rgb_valid, _ = validate_geotiff_file(paths.get('rgb', ''), 3)
-            if wq_valid and rgb_valid:
-                downloaded_months[month_name] = paths
-        month_statuses = dict(st.session_state.month_statuses.get(parameter_type, {}))
 
-    available_count = sum(
-        1 for s in month_statuses.values() if s.get('status') != STATUS_SKIPPED
-    )
+    if resume and st.session_state.downloaded_months.get(parameter_type):
+        for month_name, paths in st.session_state.downloaded_months[parameter_type].items():
+            if paths.get('wq_index') and paths.get('rgb'):
+                wq_valid, _ = validate_geotiff_file(paths['wq_index'], expected_bands=1)
+                rgb_valid, _ = validate_geotiff_file(paths['rgb'], expected_bands=3)
+                if wq_valid and rgb_valid:
+                    downloaded_months[month_name] = paths
+                    # Keep the cached status entry as well
+                    if month_name not in st.session_state.month_statuses[parameter_type]:
+                        st.session_state.month_statuses[parameter_type][month_name] = {
+                            'status': STATUS_COMPLETE, 'message': 'Cached'
+                        }
 
-    for idx, month_info in enumerate(month_infos):
+    # Also check disk for any months whose files exist but session state was lost
+    # (e.g. after a page reload without resume — file-level cache recovery)
+    for month_info in month_infos:
+        month_name = month_info['month_name']
+        if month_name in downloaded_months:
+            continue
+        wq_path = os.path.join(temp_dir, f"wq_index_{param_short}_{month_name}.tif")
+        rgb_path = os.path.join(temp_dir, f"rgb_{param_short}_{month_name}.tif")
+        wq_valid, _ = validate_geotiff_file(wq_path, expected_bands=1)
+        rgb_valid, _ = validate_geotiff_file(rgb_path, expected_bands=3)
+        if wq_valid and rgb_valid:
+            downloaded_months[month_name] = {'wq_index': wq_path, 'rgb': rgb_path}
+            st.session_state.downloaded_months[parameter_type][month_name] = downloaded_months[month_name]
+            st.session_state.month_statuses[parameter_type][month_name] = {
+                'status': STATUS_COMPLETE, 'message': 'Cached (disk)'
+            }
+
+    # Months not yet downloaded (skip ones already done or already statused as no-data)
+    already_statused = {
+        m for m, s in st.session_state.month_statuses[parameter_type].items()
+        if s.get('status') in (STATUS_NO_DATA, STATUS_COMPLETE)
+    }
+    months_to_process = [
+        m for m in month_infos
+        if m['month_name'] not in downloaded_months
+        and m['month_name'] not in already_statused
+    ]
+
+    available_count = len(downloaded_months)  # start with already-recovered months
+
+    # ------------------------------------------------------------------
+    # FIX B: Per-month EE + download loop with immediate session state writes
+    # ------------------------------------------------------------------
+    for month_info in months_to_process:
         month_name = month_info['month_name']
 
-        # Already resolved in a previous run (this session) — skip entirely.
-        if month_name in downloaded_months or month_name in month_statuses:
-            if progress_callback:
-                progress_callback(((idx + 1) / n_months) * DOWNLOAD_SHARE)
+        # FIX C: Wrap every EE server call so a transient error skips the month
+        try:
+            composite, count, stats = get_monthly_composite(
+                wq_collection, aoi, month_info['year'], month_info['month']
+            )
+        except Exception:
+            # Network or EE error — mark as failed and continue to next month
+            st.session_state.month_statuses[parameter_type][month_name] = {
+                'status': STATUS_FAILED, 'message': 'EE request failed'
+            }
             continue
 
-        composite, count, stats = get_monthly_composite(
-            wq_collection, aoi, month_info['year'], month_info['month']
+        if composite is None or count == 0:
+            st.session_state.month_statuses[parameter_type][month_name] = {
+                'status': STATUS_NO_DATA, 'message': 'No images'
+            }
+            continue
+
+        available_count += 1
+
+        wq_path, rgb_path, status, message = download_monthly_data(
+            composite, aoi, temp_dir, month_name, param_short, scale
         )
 
-        if composite is None or count == 0:
-            month_statuses[month_name] = {'status': STATUS_NO_DATA}
-            st.session_state.month_statuses.setdefault(parameter_type, {})[month_name] = \
-                month_statuses[month_name]
-        else:
-            available_count += 1
+        # FIX D: Write to session state immediately after each month — not at end
+        st.session_state.month_statuses[parameter_type][month_name] = {
+            'status': status, 'message': message
+        }
 
-            wq_path, rgb_path, status, message = download_monthly_data(
-                composite, aoi, temp_dir, month_name, param_short, scale
-            )
+        if status == STATUS_COMPLETE:
+            downloaded_months[month_name] = {'wq_index': wq_path, 'rgb': rgb_path}
+            # Persist to session state right away so a crash/reload can recover
+            st.session_state.downloaded_months[parameter_type][month_name] = {
+                'wq_index': wq_path, 'rgb': rgb_path
+            }
 
-            month_statuses[month_name] = {'status': status}
-            st.session_state.month_statuses.setdefault(parameter_type, {})[month_name] = \
-                month_statuses[month_name]
-
-            if status == STATUS_COMPLETE:
-                downloaded_months[month_name] = {'wq_index': wq_path, 'rgb': rgb_path}
-                # Checkpoint immediately so this month survives a dropped
-                # connection or an interrupted run.
-                st.session_state.downloaded_months.setdefault(parameter_type, {})[month_name] = \
-                    downloaded_months[month_name]
-
-        if progress_callback:
-            progress_callback(((idx + 1) / n_months) * DOWNLOAD_SHARE)
-
+    # ------------------------------------------------------------------
+    # Thumbnail generation (uses only successfully downloaded months)
+    # ------------------------------------------------------------------
     results = []
     mean_data = {}
 
-    sorted_months = sorted(downloaded_months.keys())
-    n_thumbs = max(len(sorted_months), 1)
-
-    for t_idx, month_name in enumerate(sorted_months):
+    for month_name in sorted(downloaded_months.keys()):
         paths = downloaded_months[month_name]
         thumb = generate_thumbnails(paths['wq_index'], paths['rgb'], month_name, parameter_type)
         if thumb:
             results.append(thumb)
             mean_data[month_name] = {'mean': thumb['mean_value'], 'coverage': thumb['water_coverage']}
 
-        if progress_callback:
-            progress_callback(DOWNLOAD_SHARE + ((t_idx + 1) / n_thumbs) * (1 - DOWNLOAD_SHARE))
-
-    if progress_callback:
-        progress_callback(1.0)
-
     return results, mean_data, len(downloaded_months), available_count
 
 
-def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_THRESHOLD, scale=10,
-                       resume_mode=False):
+def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_THRESHOLD,
+                       scale=10, resume=False):
     """
     Automatically runs preprocessing + both index calculations (NDTI, then
-    Chlorophyll-a) in sequence. Displays only a simple, user-friendly summary
-    plus a progress bar labeled with the calculation currently running.
+    Chlorophyll-a) in sequence. Displays only a simple, user-friendly summary.
 
-    If resume_mode=True, any months already completed and checkpointed in
-    session state (from a prior run that was interrupted, e.g. by a dropped
-    internet connection) are skipped rather than re-downloaded.
+    Resilience additions vs. original:
+    - resume=True is forwarded to process_single_parameter so cached months are
+      skipped rather than re-downloaded.
+    - Each parameter block is wrapped in try/except so a hard failure on turbidity
+      does not prevent chlorophyll from running (and vice-versa).
+    - processing_config is written to session state here so the main() button
+      handler can pass it to a resume run later.
     """
     if st.session_state.current_temp_dir is None or not os.path.exists(st.session_state.current_temp_dir):
         st.session_state.current_temp_dir = tempfile.mkdtemp()
     temp_dir = st.session_state.current_temp_dir
 
     summary_placeholder = st.empty()
-    progress_label = st.empty()
-    progress_bar = st.progress(0)
-    download_summary = {}
+    download_summary = dict(st.session_state.download_summary)  # preserve any prior summary
 
-    # Each parameter's calculation occupies half of the overall bar.
-    LABEL_TURBIDITY = "🌊 در حال محاسبه شاخص کدورت (NDTI)..."
-    LABEL_CHLOROPHYLL = "🌿 در حال محاسبه شاخص کلروفیل..."
+    with st.spinner("در حال پایش کیفیت آب... این فرآیند ممکن است چند دقیقه طول بکشد"):
+        # --- Turbidity (NDTI) ---
+        turb_results, turb_mean, turb_downloaded, turb_available = [], {}, 0, 0
+        try:
+            turb_results, turb_mean, turb_downloaded, turb_available = process_single_parameter(
+                aoi, start_date, end_date, PARAM_TURBIDITY, temp_dir,
+                cloudy_pixel_percentage, scale, resume=resume
+            )
+        except Exception:
+            pass  # Partial or zero results; pipeline continues to chlorophyll
 
-    def make_progress_updater(label, offset):
-        def update(fraction_done_within_param):
-            overall_fraction = offset + (fraction_done_within_param * 0.5)
-            progress_bar.progress(min(overall_fraction, 1.0))
-            progress_label.markdown(f"**{label}** — {int(min(fraction_done_within_param, 1.0) * 100)}٪")
-            # Refresh the heartbeat so the stale-processing watchdog knows
-            # this run is genuinely still active, not abandoned mid-flight.
-            st.session_state.last_progress_heartbeat = time.time()
-        return update
+        # Merge with any results already in session state (resume case)
+        if turb_results:
+            st.session_state.results[PARAM_TURBIDITY] = turb_results
+            st.session_state.mean_data[PARAM_TURBIDITY] = turb_mean
+        download_summary[PARAM_TURBIDITY] = (turb_downloaded, turb_available)
 
-    # --- Turbidity (NDTI) ---
-    turb_progress = make_progress_updater(LABEL_TURBIDITY, offset=0.0)
-    turb_progress(0)
-    turb_results, turb_mean, turb_downloaded, turb_available = process_single_parameter(
-        aoi, start_date, end_date, PARAM_TURBIDITY, temp_dir, cloudy_pixel_percentage, scale,
-        progress_callback=turb_progress, resume=resume_mode
-    )
-    st.session_state.results[PARAM_TURBIDITY] = turb_results
-    st.session_state.mean_data[PARAM_TURBIDITY] = turb_mean
-    download_summary[PARAM_TURBIDITY] = (turb_downloaded, turb_available)
+        summary_placeholder.info(
+            f"🌊 شاخص کدورت: {turb_downloaded} تصویر از {turb_available} تصویر موجود دریافت شد."
+        )
 
-    summary_placeholder.info(
-        f"🌊 شاخص کدورت: {turb_downloaded} تصویر از {turb_available} تصویر موجود دریافت شد."
-    )
+        # --- Chlorophyll-a ---
+        chl_results, chl_mean, chl_downloaded, chl_available = [], {}, 0, 0
+        try:
+            chl_results, chl_mean, chl_downloaded, chl_available = process_single_parameter(
+                aoi, start_date, end_date, PARAM_CHLOROPHYLL, temp_dir,
+                cloudy_pixel_percentage, scale, resume=resume
+            )
+        except Exception:
+            pass  # Partial or zero results; still show whatever was collected
 
-    # --- Chlorophyll-a ---
-    chl_progress = make_progress_updater(LABEL_CHLOROPHYLL, offset=0.5)
-    chl_progress(0)
-    chl_results, chl_mean, chl_downloaded, chl_available = process_single_parameter(
-        aoi, start_date, end_date, PARAM_CHLOROPHYLL, temp_dir, cloudy_pixel_percentage, scale,
-        progress_callback=chl_progress, resume=resume_mode
-    )
-    st.session_state.results[PARAM_CHLOROPHYLL] = chl_results
-    st.session_state.mean_data[PARAM_CHLOROPHYLL] = chl_mean
-    download_summary[PARAM_CHLOROPHYLL] = (chl_downloaded, chl_available)
-
-    progress_label.markdown("**✅ پایش کیفیت آب تکمیل شد**")
-    progress_bar.progress(1.0)
-    time.sleep(0.4)
-    progress_label.empty()
-    progress_bar.empty()
+        if chl_results:
+            st.session_state.results[PARAM_CHLOROPHYLL] = chl_results
+            st.session_state.mean_data[PARAM_CHLOROPHYLL] = chl_mean
+        download_summary[PARAM_CHLOROPHYLL] = (chl_downloaded, chl_available)
 
     st.session_state.download_summary = download_summary
 
-    has_any_results = bool(turb_results) or bool(chl_results)
+    has_any_results = (
+        bool(st.session_state.results.get(PARAM_TURBIDITY)) or
+        bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+    )
     return has_any_results
 
 
@@ -1013,14 +1013,6 @@ def main():
         "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای Sentinel-2."
     )
 
-    if st.session_state.show_recovery_notice:
-        st.warning(
-            "⚠️ به نظر می‌رسد پایش قبلی به دلیل قطعی اینترنت یا اتصال متوقف شده بود. "
-            "وضعیت بازنشانی شد — می‌توانید با دکمه «ادامه پایش» بدون از دست رفتن پیشرفت قبلی ادامه دهید، "
-            "یا یک پایش جدید شروع کنید."
-        )
-        st.session_state.show_recovery_notice = False
-
     # Initialize Earth Engine
     ee_ok, ee_msg = initialize_earth_engine()
     if not ee_ok:
@@ -1033,25 +1025,15 @@ def main():
     has_cache = bool(st.session_state.results.get(PARAM_TURBIDITY)) or \
                 bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
 
-    has_partial = (
-        any(
-            bool(st.session_state.downloaded_months.get(p)) or bool(st.session_state.month_statuses.get(p))
-            for p in (PARAM_TURBIDITY, PARAM_CHLOROPHYLL)
-        )
-        and not st.session_state.processing_complete
-    )
-
     if has_cache:
         st.sidebar.success("✅ نتایج پایش قبلی موجود است")
-    elif has_partial:
-        st.sidebar.warning("⏸️ پایش ناتمام — می‌توانید با «ادامه پایش» ادامه دهید")
     else:
         st.sidebar.info("هنوز پایشی انجام نشده است")
 
     if st.session_state.processing_in_progress:
         st.sidebar.warning("⏳ در حال پردازش...")
 
-    if st.sidebar.button("🗑️ پاک کردن نتایج"):
+    if st.sidebar.button("🗑️ پاک کردن نتایج", disabled=st.session_state.processing_in_progress):
         st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
@@ -1061,7 +1043,6 @@ def main():
         st.session_state.processing_config = None
         st.session_state.processing_complete = False
         st.session_state.processing_in_progress = False
-        st.session_state.last_progress_heartbeat = None
         st.rerun()
 
     # ==========================================================================
@@ -1169,36 +1150,34 @@ def main():
 
     st.caption("پس از اجرا، پیش‌پردازش (حذف ابر، حذف برف، استخراج بدنه آب)، سپس شاخص کدورت و شاخص کلروفیل به‌طور خودکار محاسبه می‌شوند.")
 
-    # Detect whether there is leftover, partially-completed progress in this
-    # session (e.g. the connection dropped or the run was stopped midway).
-    has_partial_progress = any(
-        bool(st.session_state.downloaded_months.get(p)) or bool(st.session_state.month_statuses.get(p))
-        for p in (PARAM_TURBIDITY, PARAM_CHLOROPHYLL)
-    ) and not st.session_state.processing_complete
+    # --- Buttons: Start (fresh) and Resume (after interruption) ---
+    btn_col1, btn_col2 = st.columns(2)
 
-    col_start, col_resume = st.columns(2)
+    start_btn = btn_col1.button(
+        "🚀 شروع پایش",
+        type="primary",
+        disabled=st.session_state.processing_in_progress or selected_polygon is None
+    )
 
-    with col_start:
-        start_btn = st.button(
-            "🚀 شروع پایش",
-            type="primary",
-            disabled=st.session_state.processing_in_progress or selected_polygon is None
-        )
+    # Show Resume button only when a previous interrupted run exists
+    has_partial_cache = (
+        bool(st.session_state.downloaded_months.get(PARAM_TURBIDITY)) or
+        bool(st.session_state.downloaded_months.get(PARAM_CHLOROPHYLL)) or
+        bool(st.session_state.month_statuses.get(PARAM_TURBIDITY)) or
+        bool(st.session_state.month_statuses.get(PARAM_CHLOROPHYLL))
+    )
+    resume_btn = btn_col2.button(
+        "🔄 ادامه از محل قطع",
+        disabled=(
+            not has_partial_cache or
+            st.session_state.processing_config is None or
+            st.session_state.processing_in_progress
+        ),
+        help="اگر اتصال اینترنت قطع شد، پس از اتصال مجدد این دکمه را فشار دهید تا دانلود از همانجا ادامه یابد."
+    )
 
-    with col_resume:
-        resume_btn = st.button(
-            "🔄 ادامه پایش (در صورت قطعی اینترنت)",
-            disabled=st.session_state.processing_in_progress or not has_partial_progress
-        )
-
-    if has_partial_progress and not st.session_state.processing_in_progress:
-        st.caption("ℹ️ بخشی از پایش قبلی ناتمام مانده است (مثلاً به دلیل قطع اینترنت). با «ادامه پایش» می‌توانید بدون از دست رفتن پیشرفت قبلی، ادامه دهید.")
-
-    should_process = False
-    resume_mode = False
-
+    # --- Fresh start ---
     if start_btn:
-        # Fresh run: clear all prior progress and start from month 1.
         st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
@@ -1206,58 +1185,84 @@ def main():
         st.session_state.download_summary = {}
         st.session_state.current_temp_dir = None
         st.session_state.processing_complete = False
+        st.session_state.processing_in_progress = True
+        st.session_state.resume_after_interruption = False
 
+        # FIX E: Persist processing config so Resume can reconstruct the AOI and params
         st.session_state.processing_config = {
             'polygon_coords': list(selected_polygon.exterior.coords),
             'start_date': start.strftime('%Y-%m-%d'),
             'end_date': end.strftime('%Y-%m-%d'),
+            'cloudy_pixel_percentage': CLOUD_THRESHOLD,
+            'scale': 10,
         }
-        should_process = True
-        resume_mode = False
 
-    elif resume_btn:
-        # Resume: keep whatever months are already checkpointed in session
-        # state and only fetch the ones still missing.
-        if st.session_state.processing_config is None:
-            st.session_state.processing_config = {
-                'polygon_coords': list(selected_polygon.exterior.coords),
-                'start_date': start.strftime('%Y-%m-%d'),
-                'end_date': end.strftime('%Y-%m-%d'),
-            }
-        should_process = True
-        resume_mode = True
+        aoi = ee.Geometry.Polygon([list(selected_polygon.exterior.coords)])
 
-    if should_process:
+        try:
+            success = run_full_analysis(
+                aoi,
+                start.strftime('%Y-%m-%d'),
+                end.strftime('%Y-%m-%d'),
+                CLOUD_THRESHOLD,
+                10,
+                resume=False
+            )
+            st.session_state.processing_complete = success
+            if not success:
+                st.warning("⚠️ داده‌ای برای این منطقه و بازه زمانی یافت نشد.")
+        except Exception:
+            # FIX F: On error, flag that a resume is possible instead of losing progress
+            st.session_state.resume_after_interruption = True
+            st.error(
+                "متأسفانه اتصال قطع شد یا خطایی رخ داد. "
+                "پس از برقراری اتصال، دکمه «ادامه از محل قطع» را فشار دهید."
+            )
+        finally:
+            st.session_state.processing_in_progress = False
+            st.rerun()
+
+    # --- Resume after interruption ---
+    if resume_btn and st.session_state.processing_config is not None:
         config = st.session_state.processing_config
         st.session_state.processing_in_progress = True
-        # Seed the heartbeat now, before any Earth Engine calls — those
-        # round-trips (e.g. checking image availability) happen before the
-        # first download chunk and would otherwise look like silence to the
-        # watchdog.
-        st.session_state.last_progress_heartbeat = time.time()
+        st.session_state.resume_after_interruption = False
 
-        aoi = ee.Geometry.Polygon([[tuple(c) for c in config['polygon_coords']]])
+        aoi = ee.Geometry.Polygon([config['polygon_coords']])
 
         try:
             success = run_full_analysis(
                 aoi,
                 config['start_date'],
                 config['end_date'],
-                CLOUD_THRESHOLD,
-                10,
-                resume_mode=resume_mode
+                config.get('cloudy_pixel_percentage', CLOUD_THRESHOLD),
+                config.get('scale', 10),
+                resume=True   # FIX G: pass resume=True to skip already-cached months
             )
-            st.session_state.processing_complete = success
-            if not success:
+            # Merge with previously completed results still in session state
+            has_any = (
+                bool(st.session_state.results.get(PARAM_TURBIDITY)) or
+                bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+            )
+            if has_any:
+                st.session_state.processing_complete = True
+            if not success and not has_any:
                 st.warning("⚠️ داده‌ای برای این منطقه و بازه زمانی یافت نشد.")
         except Exception:
+            st.session_state.resume_after_interruption = True
             st.error(
-                "متأسفانه در حین پردازش خطایی رخ داد (مانند قطع اتصال اینترنت). "
-                "نگران نباشید — پیشرفت تاکنون ذخیره شده و می‌توانید با دکمه «ادامه پایش» دوباره تلاش کنید."
+                "اتصال مجدداً قطع شد. لطفاً دوباره تلاش کنید."
             )
         finally:
             st.session_state.processing_in_progress = False
             st.rerun()
+
+    # Hint when a partial run can be resumed
+    if st.session_state.resume_after_interruption and not st.session_state.processing_in_progress:
+        st.warning(
+            "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
+            "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
+        )
 
     # Simple, user-friendly download summary (persists after run)
     if st.session_state.download_summary:
