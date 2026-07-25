@@ -1176,6 +1176,25 @@ def main():
         help="اگر اتصال اینترنت قطع شد، پس از اتصال مجدد این دکمه را فشار دهید تا دانلود از همانجا ادامه یابد."
     )
 
+    # --- Auto-continue after an interruption --------------------------------
+    # A dropped connection during download/processing does not always surface
+    # as a catchable Python exception (e.g. the browser/server connection is
+    # cut and the script run is aborted before it reaches its `finally`
+    # block). In that case processing_in_progress is left True and survives
+    # into the next rerun. We detect that here and resume automatically using
+    # the saved processing_config, exactly like pressing "Resume" ourselves.
+    # This is the same recovery strategy the old version used (it re-entered
+    # processing automatically whenever processing_in_progress was still True
+    # on a fresh script run) and is what lets a single click survive an
+    # internet interruption instead of leaving the app stuck (Start disabled
+    # because processing_in_progress is True, Resume disabled for the same
+    # reason).
+    auto_continue = (
+        not start_btn and not resume_btn
+        and st.session_state.processing_in_progress
+        and st.session_state.processing_config is not None
+    )
+
     # --- Fresh start ---
     if start_btn:
         st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
@@ -1222,11 +1241,14 @@ def main():
             st.session_state.processing_in_progress = False
             st.rerun()
 
-    # --- Resume after interruption ---
-    if resume_btn and st.session_state.processing_config is not None:
+    # --- Resume after interruption (manual click or automatic) ---
+    if (resume_btn or auto_continue) and st.session_state.processing_config is not None:
         config = st.session_state.processing_config
         st.session_state.processing_in_progress = True
         st.session_state.resume_after_interruption = False
+
+        if auto_continue:
+            st.info("🔄 اتصال اینترنت قطع شده بود؛ پایش از همان جا به‌طور خودکار ادامه می‌یابد...")
 
         aoi = ee.Geometry.Polygon([config['polygon_coords']])
 
