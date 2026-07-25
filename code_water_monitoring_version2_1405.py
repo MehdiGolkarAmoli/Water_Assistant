@@ -544,7 +544,7 @@ def generate_thumbnails(wq_path, rgb_path, month_name, parameter_type, max_size=
 # =============================================================================
 def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir,
                               cloudy_pixel_percentage=CLOUD_THRESHOLD, scale=10,
-                              resume=False):
+                              resume=False, progress_callback=None):
     """
     Run the full pipeline for one parameter (NDTI or Chlorophyll-a):
     cloud filtering -> snow masking -> waterbody extraction -> index calculation
@@ -565,6 +565,11 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
 
     Returns: (results_list, mean_data_dict, downloaded_count, available_count)
     No technical logs are written to the UI; this function is silent.
+
+    progress_callback(done, total, month_name), if given, is invoked once
+    before the download loop starts (to reflect months already recovered
+    from cache/resume) and once after every month is handled, so the caller
+    can drive a progress bar / stage label.
     """
     param_short = "turbidity" if parameter_type == PARAM_TURBIDITY else "chlorophyll"
 
@@ -639,6 +644,14 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
 
     available_count = len(downloaded_months)  # start with already-recovered months
 
+    # Progress bookkeeping: months already resolved before the loop (from the
+    # resume/disk-cache recovery above) count as "done" immediately so the
+    # progress bar reflects real state instead of restarting from zero.
+    already_done_count = total_months - len(months_to_process)
+    processed_count = already_done_count
+    if progress_callback:
+        progress_callback(processed_count, total_months, None)
+
     # ------------------------------------------------------------------
     # FIX B: Per-month EE + download loop with immediate session state writes
     # ------------------------------------------------------------------
@@ -655,12 +668,18 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             st.session_state.month_statuses[parameter_type][month_name] = {
                 'status': STATUS_FAILED, 'message': 'EE request failed'
             }
+            processed_count += 1
+            if progress_callback:
+                progress_callback(processed_count, total_months, month_name)
             continue
 
         if composite is None or count == 0:
             st.session_state.month_statuses[parameter_type][month_name] = {
                 'status': STATUS_NO_DATA, 'message': 'No images'
             }
+            processed_count += 1
+            if progress_callback:
+                progress_callback(processed_count, total_months, month_name)
             continue
 
         available_count += 1
@@ -680,6 +699,10 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             st.session_state.downloaded_months[parameter_type][month_name] = {
                 'wq_index': wq_path, 'rgb': rgb_path
             }
+
+        processed_count += 1
+        if progress_callback:
+            progress_callback(processed_count, total_months, month_name)
 
     # ------------------------------------------------------------------
     # Thumbnail generation (uses only successfully downloaded months)
@@ -718,13 +741,42 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
     summary_placeholder = st.empty()
     download_summary = dict(st.session_state.download_summary)  # preserve any prior summary
 
+    # ------------------------------------------------------------------
+    # Progress bar + stage label — shows overall level (%) and which stage
+    # (parameter + month) is currently being processed. Total work units are
+    # "months × 2 parameters"; months already recovered via resume/disk cache
+    # count as already-done so the bar starts from the right place on Resume.
+    # ------------------------------------------------------------------
+    start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+    end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
+    total_months = (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month)
+    total_units = max(total_months * 2, 1)
+
+    progress_bar = st.progress(0)
+    stage_text = st.empty()
+
+    def make_progress_callback(stage_label, unit_offset):
+        def _callback(done_in_stage, total_in_stage, month_name):
+            done_units = unit_offset + done_in_stage
+            percent = int(min(1.0, done_units / total_units) * 100)
+            if month_name:
+                stage_text.markdown(
+                    f"**{stage_label}** — در حال پردازش ماه «{month_name}» "
+                    f"({done_in_stage} از {total_in_stage}) — {percent}٪"
+                )
+            else:
+                stage_text.markdown(f"**{stage_label}** — در حال آماده‌سازی... — {percent}٪")
+            progress_bar.progress(min(1.0, done_units / total_units))
+        return _callback
+
     with st.spinner("در حال پایش کیفیت آب... این فرآیند ممکن است چند دقیقه طول بکشد"):
         # --- Turbidity (NDTI) ---
         turb_results, turb_mean, turb_downloaded, turb_available = [], {}, 0, 0
         try:
             turb_results, turb_mean, turb_downloaded, turb_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_TURBIDITY, temp_dir,
-                cloudy_pixel_percentage, scale, resume=resume
+                cloudy_pixel_percentage, scale, resume=resume,
+                progress_callback=make_progress_callback("🌊 مرحله ۱ از ۲ — شاخص کدورت (NDTI)", 0)
             )
         except Exception:
             pass  # Partial or zero results; pipeline continues to chlorophyll
@@ -744,7 +796,8 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
         try:
             chl_results, chl_mean, chl_downloaded, chl_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_CHLOROPHYLL, temp_dir,
-                cloudy_pixel_percentage, scale, resume=resume
+                cloudy_pixel_percentage, scale, resume=resume,
+                progress_callback=make_progress_callback("🌿 مرحله ۲ از ۲ — شاخص کلروفیل", total_months)
             )
         except Exception:
             pass  # Partial or zero results; still show whatever was collected
@@ -753,6 +806,9 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             st.session_state.results[PARAM_CHLOROPHYLL] = chl_results
             st.session_state.mean_data[PARAM_CHLOROPHYLL] = chl_mean
         download_summary[PARAM_CHLOROPHYLL] = (chl_downloaded, chl_available)
+
+    progress_bar.progress(1.0)
+    stage_text.markdown("✅ پردازش هر دو شاخص به پایان رسید — ۱۰۰٪")
 
     st.session_state.download_summary = download_summary
 
