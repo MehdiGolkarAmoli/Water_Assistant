@@ -204,7 +204,7 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
     3. Calculate NDSI for snow detection: (B3 - B11) / (B3 + B11)
     4. Create snow mask: NDSI > 0.42 AND B11 > 0.1
     5. Calculate NDWI for water body detection: (B3 - B8) / (B3 + B8) >= 0.05, excluding snow
-    6. Calculate Chlorophyll Index: 4.26 * (B3/B1)^3.94
+    6. Calculate Chlorophyll Index (NDCI): (B5 - B4) / (B5 + B4)
     """
     s2_sr = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
              .filterBounds(aoi)
@@ -259,7 +259,7 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             cloud = img.select('probability')
             cloud_free = cloud.lt(CLOUD_PROB_THRESHOLD)
 
-            sr = img.select(['B1', 'B2', 'B3', 'B4', 'B8', 'B11']).multiply(0.0001)
+            sr = img.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B8', 'B11']).multiply(0.0001)
 
             ndsi = sr.normalizedDifference(['B3', 'B11']).rename('ndsi')
             is_snow = ndsi.gt(NDSI_THRESHOLD).And(sr.select('B11').gt(SNOW_B11_THRESHOLD))
@@ -267,13 +267,9 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             ndwi = sr.normalizedDifference(['B3', 'B8']).rename('ndwi')
             water_body = ndwi.gte(NDWI_THRESHOLD_CHLOROPHYLL).And(is_snow.Not())
 
-            chl_index = sr.expression(
-                "4.26 * pow((B03 / B01), 3.94)",
-                {
-                    "B03": sr.select('B3'),
-                    "B01": sr.select('B1')
-                }
-            ).rename('wq_index')
+            # NDCI (Normalized Difference Chlorophyll Index): (B5 - B4) / (B5 + B4)
+            # https://custom-scripts.sentinel-hub.com/custom-scripts/sentinel-2/ndci/
+            chl_index = sr.normalizedDifference(['B5', 'B4']).rename('wq_index')
 
             wq_masked = chl_index.updateMask(cloud_free).updateMask(water_body)
 
