@@ -1025,45 +1025,65 @@ def display_statistics_summary(results, parameter_type):
         st.dataframe(df, use_container_width=True)
 
 
-def generate_combined_timeseries_txt():
+def generate_combined_timeseries_excel():
     """
-    Build a single plain-text (.txt) report containing the monthly
-    time-series values for BOTH parameters — Turbidity (NDTI) and
-    Chlorophyll (NDCI) — so they can be downloaded together in one file.
+    Build a single Excel (.xlsx) workbook containing the monthly time-series
+    values for BOTH parameters — Turbidity (NDTI) and Chlorophyll (NDCI) —
+    as two sheets in one file. Returns workbook bytes for st.download_button.
     """
-    lines = []
-    lines.append("گزارش سری زمانی پایش کیفیت آب")
-    lines.append("=" * 60)
-    lines.append(f"تاریخ تهیه گزارش: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    lines.append("")
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    wb.remove(wb.active)  # drop the default empty sheet
+
+    header_font = Font(name='Arial', bold=True, color='FFFFFF')
+    header_fill = PatternFill(start_color='1F77B4', end_color='1F77B4', fill_type='solid')
+    body_font = Font(name='Arial')
+    center = Alignment(horizontal='center')
 
     sections = [
-        (PARAM_TURBIDITY, "شاخص کدورت آب (NDTI)", "NDTI"),
-        (PARAM_CHLOROPHYLL, "شاخص کلروفیل (NDCI)", "NDCI"),
+        (PARAM_TURBIDITY, "کدورت (NDTI)", "میانگین NDTI"),
+        (PARAM_CHLOROPHYLL, "کلروفیل (NDCI)", "میانگین NDCI"),
     ]
 
-    for parameter_type, title, short_label in sections:
-        results = st.session_state.results.get(parameter_type, [])
+    for parameter_type, sheet_name, value_header in sections:
+        ws = wb.create_sheet(title=sheet_name)
+        ws.sheet_view.rightToLeft = True
 
-        lines.append(title)
-        lines.append("-" * len(title))
+        headers = ["ماه", value_header, "پوشش آب (%)"]
+        ws.append(headers)
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center
+
+        results = st.session_state.results.get(parameter_type, [])
+        for r in sorted(results, key=lambda x: x['month_name']):
+            mean_val = r['mean_value']
+            mean_out = round(float(mean_val), 4) if not np.isnan(mean_val) else "بدون داده"
+            ws.append([r['month_name'], mean_out, round(float(r['water_coverage']), 1)])
 
         if not results:
-            lines.append("داده‌ای موجود نیست.")
+            ws.cell(row=2, column=1, value="داده‌ای موجود نیست.").font = body_font
         else:
-            header = f"{'ماه':<12}{short_label + ' میانگین':>18}{'پوشش آب (%)':>16}"
-            lines.append(header)
-            lines.append("-" * len(header))
+            for row in ws.iter_rows(min_row=2):
+                for cell in row:
+                    cell.font = body_font
+                    cell.alignment = center
 
-            for r in sorted(results, key=lambda x: x['month_name']):
-                mean_val = r['mean_value']
-                mean_str = f"{mean_val:.4f}" if not np.isnan(mean_val) else "بدون داده"
-                coverage_str = f"{r['water_coverage']:.1f}"
-                lines.append(f"{r['month_name']:<12}{mean_str:>18}{coverage_str:>16}")
+        column_widths = [14, 18, 16]
+        for i, w in enumerate(column_widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
 
-        lines.append("")
+        ws.freeze_panes = "A2"
 
-    return "\n".join(lines)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 def render_parameter_page(parameter_type):
@@ -1396,13 +1416,13 @@ def main():
         st.divider()
         st.header("📊 نتایج پایش")
 
-        # --- Download combined time-series (Turbidity + Chlorophyll) as one .txt ---
+        # --- Download combined time-series (Turbidity + Chlorophyll) as one .xlsx ---
         if st.session_state.results.get(PARAM_TURBIDITY) or st.session_state.results.get(PARAM_CHLOROPHYLL):
             st.download_button(
-                label="⬇️ دانلود سری زمانی کدورت (NDTI) و کلروفیل (NDCI) — یک فایل txt",
-                data=generate_combined_timeseries_txt(),
-                file_name="water_quality_timeseries.txt",
-                mime="text/plain",
+                label="⬇️ دانلود سری زمانی کدورت (NDTI) و کلروفیل (NDCI) — یک فایل Excel",
+                data=generate_combined_timeseries_excel(),
+                file_name="water_quality_timeseries.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
 
