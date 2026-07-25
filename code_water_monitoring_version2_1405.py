@@ -1025,6 +1025,47 @@ def display_statistics_summary(results, parameter_type):
         st.dataframe(df, use_container_width=True)
 
 
+def generate_combined_timeseries_txt():
+    """
+    Build a single plain-text (.txt) report containing the monthly
+    time-series values for BOTH parameters — Turbidity (NDTI) and
+    Chlorophyll (NDCI) — so they can be downloaded together in one file.
+    """
+    lines = []
+    lines.append("گزارش سری زمانی پایش کیفیت آب")
+    lines.append("=" * 60)
+    lines.append(f"تاریخ تهیه گزارش: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("")
+
+    sections = [
+        (PARAM_TURBIDITY, "شاخص کدورت آب (NDTI)", "NDTI"),
+        (PARAM_CHLOROPHYLL, "شاخص کلروفیل (NDCI)", "NDCI"),
+    ]
+
+    for parameter_type, title, short_label in sections:
+        results = st.session_state.results.get(parameter_type, [])
+
+        lines.append(title)
+        lines.append("-" * len(title))
+
+        if not results:
+            lines.append("داده‌ای موجود نیست.")
+        else:
+            header = f"{'ماه':<12}{short_label + ' میانگین':>18}{'پوشش آب (%)':>16}"
+            lines.append(header)
+            lines.append("-" * len(header))
+
+            for r in sorted(results, key=lambda x: x['month_name']):
+                mean_val = r['mean_value']
+                mean_str = f"{mean_val:.4f}" if not np.isnan(mean_val) else "بدون داده"
+                coverage_str = f"{r['water_coverage']:.1f}"
+                lines.append(f"{r['month_name']:<12}{mean_str:>18}{coverage_str:>16}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def render_parameter_page(parameter_type):
     """
     Full page for one parameter, in the required order:
@@ -1354,6 +1395,16 @@ def main():
     if st.session_state.processing_complete:
         st.divider()
         st.header("📊 نتایج پایش")
+
+        # --- Download combined time-series (Turbidity + Chlorophyll) as one .txt ---
+        if st.session_state.results.get(PARAM_TURBIDITY) or st.session_state.results.get(PARAM_CHLOROPHYLL):
+            st.download_button(
+                label="⬇️ دانلود سری زمانی کدورت (NDTI) و کلروفیل (NDCI) — یک فایل txt",
+                data=generate_combined_timeseries_txt(),
+                file_name="water_quality_timeseries.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
         tab_turbidity, tab_chlorophyll = st.tabs(["🌊 کدورت آب (NDTI)", "🌿 کلروفیل"])
 
