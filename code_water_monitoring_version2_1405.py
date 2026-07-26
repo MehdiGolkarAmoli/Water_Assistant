@@ -62,7 +62,15 @@ AWEI_THRESHOLD = 0.05
 
 # Snow detection thresholds (preprocessing only — excludes snow from water)
 NDSI_THRESHOLD = 0.42
-SNOW_B11_THRESHOLD = 0.1
+SNOW_B11_THRESHOLD = 0.1  # kept for reference; no longer used by is_snow (see below)
+
+# MODIS-heritage water/snow discrimination test (Hall et al., 1995; Riggs et al.),
+# translated to Sentinel-2 bands. Water absorbs NIR almost completely regardless
+# of turbidity, while snow reflects strongly there, so this is a more robust way
+# to keep turbid/sediment-laden water from being flagged as snow than the SWIR
+# threshold alone.
+NIR_SNOW_THRESHOLD = 0.11    # B8 (NIR) — MODIS band 2 analogue
+GREEN_SNOW_THRESHOLD = 0.1   # B3 (Green) — MODIS band 4 analogue
 
 # Parameter identifiers (internal use only — never shown as a user choice)
 PARAM_TURBIDITY = "Turbidity (NDTI)"
@@ -196,7 +204,7 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
     1. Link S2_SR with S2_CLOUD_PROBABILITY
     2. Apply cloud mask (probability < 15)
     3. Calculate NDSI for snow detection: (B3 - B11) / (B3 + B11)
-    4. Create snow mask: NDSI > 0.42 AND B11 > 0.1
+    4. Create snow mask (MODIS-heritage water/snow test): NDSI > 0.42 AND B8 (NIR) > 0.11 AND B3 (Green) > 0.1
     5. Calculate AWEIsh for water body detection: B2 + 2.5*B3 - 1.5*(B8+B11) - 0.25*B12 > 0.05, excluding snow
     6. Calculate NDTI (turbidity index): (B4 - B3) / (B4 + B3)
 
@@ -204,7 +212,7 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
     1. Link S2_SR with S2_CLOUD_PROBABILITY
     2. Apply cloud mask (probability < 15)
     3. Calculate NDSI for snow detection: (B3 - B11) / (B3 + B11)
-    4. Create snow mask: NDSI > 0.42 AND B11 > 0.1
+    4. Create snow mask (MODIS-heritage water/snow test): NDSI > 0.42 AND B8 (NIR) > 0.11 AND B3 (Green) > 0.1
     5. Calculate AWEIsh for water body detection: B2 + 2.5*B3 - 1.5*(B8+B11) - 0.25*B12 > 0.05, excluding snow
     6. Calculate Chlorophyll Index (NDCI): (B5 - B4) / (B5 + B4)
     """
@@ -237,7 +245,11 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             sr = img.select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']).multiply(0.0001)
 
             ndsi = sr.normalizedDifference(['B3', 'B11']).rename('ndsi')
-            is_snow = ndsi.gt(NDSI_THRESHOLD).And(sr.select('B11').gt(SNOW_B11_THRESHOLD))
+            is_snow = (
+                ndsi.gt(NDSI_THRESHOLD)                          # NDSI > 0.42 — spectral snow signature
+                .And(sr.select('B8').gt(NIR_SNOW_THRESHOLD))     # NIR ~0.11 — excludes water, snow reflects strongly here
+                .And(sr.select('B3').gt(GREEN_SNOW_THRESHOLD))   # Green ~0.1 — excludes dark shadow/non-snow surfaces
+            )
 
             awei = sr.expression(
                 'BLUE + 2.5 * GREEN - 1.5 * (NIR + SWIR1) - 0.25 * SWIR2',
@@ -273,7 +285,11 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             sr = img.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B8', 'B11', 'B12']).multiply(0.0001)
 
             ndsi = sr.normalizedDifference(['B3', 'B11']).rename('ndsi')
-            is_snow = ndsi.gt(NDSI_THRESHOLD).And(sr.select('B11').gt(SNOW_B11_THRESHOLD))
+            is_snow = (
+                ndsi.gt(NDSI_THRESHOLD)                          # NDSI > 0.42 — spectral snow signature
+                .And(sr.select('B8').gt(NIR_SNOW_THRESHOLD))     # NIR ~0.11 — excludes water, snow reflects strongly here
+                .And(sr.select('B3').gt(GREEN_SNOW_THRESHOLD))   # Green ~0.1 — excludes dark shadow/non-snow surfaces
+            )
 
             awei = sr.expression(
                 'BLUE + 2.5 * GREEN - 1.5 * (NIR + SWIR1) - 0.25 * SWIR2',
