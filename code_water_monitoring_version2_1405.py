@@ -1159,7 +1159,7 @@ def render_parameter_page(parameter_type):
 def main():
     st.title("🌊 سامانه پایش کیفیت آب")
     st.markdown(
-        "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای Sentinel-2."
+        "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای "
     )
 
     # Initialize Earth Engine
