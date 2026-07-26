@@ -54,9 +54,11 @@ from streamlit_folium import st_folium
 CLOUD_THRESHOLD = 10          # % — fixed cloud coverage threshold (CLOUDY_PIXEL_PERCENTAGE)
 CLOUD_PROB_THRESHOLD = 15      # per-pixel cloud probability cutoff
 
-# Water body detection thresholds
-NDWI_THRESHOLD_TURBIDITY = 0.1     # NDWI using B3, B12
-NDWI_THRESHOLD_CHLOROPHYLL = 0.05  # NDWI using B3, B8
+# Water body detection threshold
+# AWEIsh (Automated Water Extraction Index, shadow variant) — shared by both
+# indices so NDTI and NDCI are computed on the exact same water mask.
+# AWEIsh = Blue + 2.5*Green - 1.5*(NIR + SWIR1) - 0.25*SWIR2
+AWEI_THRESHOLD = 0.05
 
 # Snow detection thresholds (preprocessing only — excludes snow from water)
 NDSI_THRESHOLD = 0.42
@@ -195,7 +197,7 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
     2. Apply cloud mask (probability < 15)
     3. Calculate NDSI for snow detection: (B3 - B11) / (B3 + B11)
     4. Create snow mask: NDSI > 0.42 AND B11 > 0.1
-    5. Calculate NDWI for water body detection: (B3 - B12) / (B3 + B12) > 0.1, excluding snow
+    5. Calculate AWEIsh for water body detection: B2 + 2.5*B3 - 1.5*(B8+B11) - 0.25*B12 > 0.05, excluding snow
     6. Calculate NDTI (turbidity index): (B4 - B3) / (B4 + B3)
 
     For CHLOROPHYLL:
@@ -203,7 +205,7 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
     2. Apply cloud mask (probability < 15)
     3. Calculate NDSI for snow detection: (B3 - B11) / (B3 + B11)
     4. Create snow mask: NDSI > 0.42 AND B11 > 0.1
-    5. Calculate NDWI for water body detection: (B3 - B8) / (B3 + B8) >= 0.05, excluding snow
+    5. Calculate AWEIsh for water body detection: B2 + 2.5*B3 - 1.5*(B8+B11) - 0.25*B12 > 0.05, excluding snow
     6. Calculate Chlorophyll Index (NDCI): (B5 - B4) / (B5 + B4)
     """
     s2_sr = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
@@ -232,13 +234,22 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             cloud = img.select('probability')
             cloud_free = cloud.lt(CLOUD_PROB_THRESHOLD)
 
-            sr = img.select(['B2', 'B3', 'B4', 'B11', 'B12']).multiply(0.0001)
+            sr = img.select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']).multiply(0.0001)
 
             ndsi = sr.normalizedDifference(['B3', 'B11']).rename('ndsi')
             is_snow = ndsi.gt(NDSI_THRESHOLD).And(sr.select('B11').gt(SNOW_B11_THRESHOLD))
 
-            ndwi = sr.normalizedDifference(['B3', 'B12']).rename('ndwi')
-            water_body = ndwi.gt(NDWI_THRESHOLD_TURBIDITY).And(is_snow.Not())
+            awei = sr.expression(
+                'BLUE + 2.5 * GREEN - 1.5 * (NIR + SWIR1) - 0.25 * SWIR2',
+                {
+                    'BLUE': sr.select('B2'),
+                    'GREEN': sr.select('B3'),
+                    'NIR': sr.select('B8'),
+                    'SWIR1': sr.select('B11'),
+                    'SWIR2': sr.select('B12'),
+                }
+            ).rename('awei')
+            water_body = awei.gt(AWEI_THRESHOLD).And(is_snow.Not())
 
             ndti = sr.normalizedDifference(['B4', 'B3']).rename('wq_index')
 
@@ -259,13 +270,22 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             cloud = img.select('probability')
             cloud_free = cloud.lt(CLOUD_PROB_THRESHOLD)
 
-            sr = img.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B8', 'B11']).multiply(0.0001)
+            sr = img.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B8', 'B11', 'B12']).multiply(0.0001)
 
             ndsi = sr.normalizedDifference(['B3', 'B11']).rename('ndsi')
             is_snow = ndsi.gt(NDSI_THRESHOLD).And(sr.select('B11').gt(SNOW_B11_THRESHOLD))
 
-            ndwi = sr.normalizedDifference(['B3', 'B8']).rename('ndwi')
-            water_body = ndwi.gte(NDWI_THRESHOLD_CHLOROPHYLL).And(is_snow.Not())
+            awei = sr.expression(
+                'BLUE + 2.5 * GREEN - 1.5 * (NIR + SWIR1) - 0.25 * SWIR2',
+                {
+                    'BLUE': sr.select('B2'),
+                    'GREEN': sr.select('B3'),
+                    'NIR': sr.select('B8'),
+                    'SWIR1': sr.select('B11'),
+                    'SWIR2': sr.select('B12'),
+                }
+            ).rename('awei')
+            water_body = awei.gt(AWEI_THRESHOLD).And(is_snow.Not())
 
             # NDCI (Normalized Difference Chlorophyll Index): (B5 - B4) / (B5 + B4)
             # https://custom-scripts.sentinel-hub.com/custom-scripts/sentinel-2/ndci/
