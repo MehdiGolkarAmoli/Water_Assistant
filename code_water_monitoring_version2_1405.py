@@ -61,7 +61,7 @@ CLOUD_PROB_THRESHOLD = 15      # per-pixel cloud probability cutoff
 AWEI_THRESHOLD = 0.05
 
 # Snow detection thresholds (preprocessing only — excludes snow from water)
-NDSI_THRESHOLD = 0.42
+NDSI_THRESHOLD = 0.40
 SNOW_B11_THRESHOLD = 0.1  # kept for reference; no longer used by is_snow (see below)
 
 # MODIS-heritage water/snow discrimination test (Hall et al., 1995; Riggs et al.),
