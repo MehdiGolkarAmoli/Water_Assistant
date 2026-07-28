@@ -61,7 +61,7 @@ CLOUD_PROB_THRESHOLD = 15      # per-pixel cloud probability cutoff
 AWEI_THRESHOLD = 0.05
 
 # Snow detection thresholds (preprocessing only — excludes snow from water)
-NDSI_THRESHOLD = 0.40
+NDSI_THRESHOLD = 0.39
 SNOW_B11_THRESHOLD = 0.1  # kept for reference; no longer used by is_snow (see below)
 
 # MODIS-heritage water/snow discrimination test (Hall et al., 1995; Riggs et al.),
@@ -77,8 +77,8 @@ PARAM_TURBIDITY = "Turbidity (NDTI)"
 PARAM_CHLOROPHYLL = "Chlorophyll Index"
 
 # Chlorophyll visualization range
-CHL_VMIN = 2
-CHL_VMAX = 50
+CHL_VMIN = -1.0
+CHL_VMAX = 0.9
 
 # Download settings
 MAX_RETRIES = 3
