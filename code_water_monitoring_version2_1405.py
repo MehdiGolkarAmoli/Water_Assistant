@@ -1154,6 +1154,357 @@ def render_parameter_page(parameter_type):
 
 
 # =============================================================================
+# نظر متخصص آب — Statistical Analysis Pipeline
+# (ported as-is from the separate analysis notebook: Mann-Kendall trend test,
+#  MAD-based anomaly detection, seasonal climatology, cross-parameter
+#  correlation — only the input source changes: in-memory Excel bytes
+#  instead of a file path, so nothing needs to be written to disk on Posit.)
+# =============================================================================
+def _expert_compute_trend(values, n):
+    """Mann-Kendall trend test: standard (always) + seasonal (once >=24 months exist)."""
+    import pymannkendall as mk
+
+    result = {}
+
+    if n < 4:
+        result["standard"] = {"available": False, "reason": f"Mann-Kendall needs at least ~4 points; only {n} available."}
+        result["seasonal"] = {"available": False, "reason": "Not enough data."}
+        return result
+
+    mk_res = mk.original_test(values)
+    result["standard"] = {
+        "method": "Mann-Kendall (non-seasonal)",
+        "trend": mk_res.trend,
+        "significant": bool(mk_res.h),
+        "p_value": float(mk_res.p),
+        "tau": float(mk_res.Tau),
+        "sen_slope_per_month": float(mk_res.slope),
+        "note": ("Does not separate the seasonal cycle from the trend. "
+                 "If a strong seasonal pattern exists, prefer the seasonal result below when available.")
+    }
+
+    if n >= 24:
+        try:
+            smk_res = mk.seasonal_test(values, period=12)
+            result["seasonal"] = {
+                "method": "Seasonal Mann-Kendall (Hirsch-Slack), period=12 months",
+                "trend": smk_res.trend,
+                "significant": bool(smk_res.h),
+                "p_value": float(smk_res.p),
+                "sen_slope_per_month": float(smk_res.slope),
+                "replicates_per_season": round(n / 12, 1),
+                "power_caution": (f"Only ~{n/12:.1f} years of data per calendar month are available. "
+                                   "Seasonal Mann-Kendall has low statistical power below ~3-4 years; "
+                                   "treat this result as directional, not conclusive.")
+            }
+        except Exception as e:
+            result["seasonal"] = {"available": False, "reason": f"Could not compute: {e}"}
+    else:
+        result["seasonal"] = {
+            "available": False,
+            "reason": f"Needs at least 24 months (2 full years) to run; only {n} months available."
+        }
+
+    return result
+
+
+def _expert_detect_anomalies_mad(df, date_col, value_column, threshold=3.5):
+    """Median Absolute Deviation based anomaly detection."""
+    values = df[value_column]
+    median = values.median()
+    mad = np.median(np.abs(values - median))
+
+    if mad == 0:
+        return []
+
+    modified_z = 0.6745 * (values - median) / mad
+
+    anomalies = []
+    for idx, row in df.iterrows():
+        if abs(modified_z[idx]) > threshold:
+            anomalies.append({
+                "date": row[date_col].strftime("%Y-%m"),
+                "value": float(row[value_column]),
+                "modified_z_score": round(float(modified_z[idx]), 2)
+            })
+    return anomalies
+
+
+def _expert_analyze_sheet(df, value_column, date_col=None, water_col=None):
+    import pandas as pd
+
+    date_col = date_col or df.columns[0]
+    water_col = water_col or df.columns[-1]
+
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col).reset_index(drop=True)
+
+    values = df[value_column]
+    n = len(values)
+
+    raw_observations = [
+        {
+            "date": row[date_col].strftime("%Y-%m"),
+            "value": float(row[value_column]),
+            "water_coverage_pct": float(row[water_col])
+        }
+        for _, row in df.iterrows()
+    ]
+
+    trend = _expert_compute_trend(values.values, n)
+    anomalies = _expert_detect_anomalies_mad(df, date_col, value_column)
+
+    df["MonthNumber"] = df[date_col].dt.month
+    seasonal_climatology = df.groupby("MonthNumber")[value_column].mean().round(4).to_dict()
+
+    summary = {
+        "period": {
+            "start": df[date_col].min().strftime("%Y-%m"),
+            "end": df[date_col].max().strftime("%Y-%m"),
+            "months": int(n)
+        },
+        "raw_observations": raw_observations,
+        "statistics": {
+            "mean": float(values.mean()),
+            "median": float(values.median()),
+            "std": float(values.std()),
+            "variance": float(values.var()),
+            "min": float(values.min()),
+            "max": float(values.max()),
+            "range": float(values.max() - values.min())
+        },
+        "trend": trend,
+        "extremes": {
+            "minimum": {"date": df.loc[values.idxmin(), date_col].strftime("%Y-%m"), "value": float(values.min())},
+            "maximum": {"date": df.loc[values.idxmax(), date_col].strftime("%Y-%m"), "value": float(values.max())}
+        },
+        "seasonal_climatology": seasonal_climatology,
+        "water_coverage": {
+            "mean_percent": float(df[water_col].mean()),
+            "minimum_percent": float(df[water_col].min()),
+            "maximum_percent": float(df[water_col].max())
+        },
+        "missing_values": int(values.isna().sum()),
+        "anomalies": anomalies
+    }
+    return summary
+
+
+def _expert_compute_correlation_by_date(df1, value_col1, df2, value_col2, date_col1=None, date_col2=None):
+    """Correlate NDTI vs NDCI matched by actual date, not row position."""
+    import pandas as pd
+
+    date_col1 = date_col1 or df1.columns[0]
+    date_col2 = date_col2 or df2.columns[0]
+
+    d1 = df1[[date_col1, value_col1]].copy()
+    d1[date_col1] = pd.to_datetime(d1[date_col1])
+    d1 = d1.rename(columns={date_col1: "date", value_col1: "v1"})
+
+    d2 = df2[[date_col2, value_col2]].copy()
+    d2[date_col2] = pd.to_datetime(d2[date_col2])
+    d2 = d2.rename(columns={date_col2: "date", value_col2: "v2"})
+
+    merged = pd.merge(d1, d2, on="date", how="inner")
+    unmatched_1 = set(d1["date"]) - set(merged["date"])
+    unmatched_2 = set(d2["date"]) - set(merged["date"])
+
+    return {
+        "correlation_ndti_ndci": float(merged["v1"].corr(merged["v2"])),
+        "n_matched_dates": int(len(merged)),
+        "unmatched_dates_ndti_only": sorted(d.strftime("%Y-%m") for d in unmatched_1),
+        "unmatched_dates_ndci_only": sorted(d.strftime("%Y-%m") for d in unmatched_2),
+    }
+
+
+def analyze_water_quality_from_bytes(excel_bytes):
+    """
+    Same logic as the standalone analyze_water_quality(excel_file) from the
+    analysis notebook, adapted to read the in-memory Excel bytes produced by
+    generate_combined_timeseries_excel() instead of a file on disk.
+
+    Robustness addition (not present in the original notebook): a month with
+    no data is written into the Excel export as the text "بدون داده" rather
+    than a number, which would otherwise turn the whole column non-numeric
+    and silently drop that parameter from the analysis. Those cells are
+    coerced to NaN and excluded here instead.
+    """
+    import io
+    import pandas as pd
+
+    excel_buffer = io.BytesIO(excel_bytes)
+    xls = pd.ExcelFile(excel_buffer)
+    sheet_names = xls.sheet_names
+    results = {}
+    cleaned_frames = {}
+
+    for sheet in sheet_names:
+        df = pd.read_excel(excel_buffer, sheet_name=sheet)
+        numeric_like_cols = [c for c in df.columns if c != df.columns[0]]
+        for c in numeric_like_cols:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        df = df.dropna(subset=numeric_like_cols[:1])  # drop rows with no value for the main indicator
+
+        numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+        if len(numeric_cols) < 2 or df.empty:
+            continue
+        value_col = numeric_cols[0]
+        results[sheet] = _expert_analyze_sheet(df, value_col)
+        cleaned_frames[sheet] = df
+
+    if len(cleaned_frames) >= 2:
+        sheet_a, sheet_b = list(cleaned_frames.keys())[:2]
+        df1, df2 = cleaned_frames[sheet_a], cleaned_frames[sheet_b]
+        col1 = df1.select_dtypes(include=np.number).columns[0]
+        col2 = df2.select_dtypes(include=np.number).columns[0]
+        results["relationship"] = _expert_compute_correlation_by_date(df1, col1, df2, col2)
+
+    return results
+
+
+def _expert_results_signature():
+    """Cheap signature used to detect when monitoring results changed, so the
+    JSON summary + chat history for نظر متخصص آب can be refreshed automatically."""
+    sig = []
+    for p in (PARAM_TURBIDITY, PARAM_CHLOROPHYLL):
+        results = st.session_state.results.get(p, [])
+        sig.append(tuple(sorted(
+            (r['month_name'], None if np.isnan(r['mean_value']) else round(float(r['mean_value']), 6))
+            for r in results
+        )))
+    return tuple(sig)
+
+
+# =============================================================================
+# نظر متخصص آب — LLM Chat (OpenAI-compatible endpoint)
+# =============================================================================
+# NOTE ON CREDENTIALS: this app is hosted on a Posit server that cannot read a
+# local .env file, so the API base URL / key are hardcoded below instead of
+# being loaded through python-dotenv, per explicit request. If this project's
+# git repo is ever shared or made public, consider moving these two values to
+# Posit Connect's own "Environment Variables" panel (Settings → Vars) instead
+# of leaving a live key in source — that still avoids the .env problem
+# without exposing the key in version control.
+OPENAI_BASE_URL = "https://api.avalai.ir/v1"
+OPENAI_API_KEY = "aa-xLsSw3ad4txKKuwvHY7cPGy1StemeS3xtuChVf9utHKOd3Cr"
+EXPERT_CHAT_MODEL = "gpt-4o-mini"  # change to whichever model your existing analysis script used
+
+
+def _build_expert_system_prompt(analysis_json):
+    return f"""شما یک متخصص باتجربه در زمینه کیفیت آب و سنجش‌ازدور ماهواره‌ای (سنتینل-۲) هستید.
+
+در ادامه، خلاصه‌ تحلیل آماری سری زمانی شاخص کدورت آب و شاخص کلروفیل یک بدنه آبی، به‌صورت JSON در
+اختیار شما قرار گرفته است. این خلاصه شامل نتیجه آزمون روند من-کندال، ناهنجاری‌های شناسایی‌شده
+(بر پایه انحراف مطلق از میانه)، الگوی فصلی چندساله، آمار توصیفی، و همبستگی بین دو شاخص است.
+
+داده‌های تحلیل:
+{analysis_json}
+
+دستورالعمل‌های پاسخ‌گویی:
+۱. پاسخ خود را در درجه اول بر پایه داده‌های JSON بالا بنا کنید و در کنار آن از دانش عمومی خود درباره
+   کیفیت آب، سنجش‌ازدور و علوم محیط‌زیست برای تفسیر و تکمیل پاسخ استفاده کنید.
+۲. تفسیر را مبتنی بر شواهد ارائه دهید؛ به‌جای نسبت‌دادن هر نوسان یا ناهنجاری به‌طور پیش‌فرض به «خطای
+   حسگر»، ابتدا توضیح‌های محیطی و هیدرولوژیکی محتمل را در نظر بگیرید (رواناب فصلی، بارندگی، ذوب برف،
+   رسوب‌گذاری، شکوفایی جلبکی و مانند آن).
+۳. اگر داده کافی برای نتیجه‌گیری قطعی وجود ندارد (برای نمونه کمتر از ۲۴ ماه برای آزمون فصلی)، این
+   محدودیت را صریح بیان کنید؛ حدس قطعی نزنید.
+۴. اگر پرسش کاربر به زبان فارسی باشد، پاسخ باید کاملاً و فقط به زبان فارسی نوشته شود و از هیچ مخفف یا
+   واژه انگلیسی استفاده نشود (برای نمونه به‌جای NDTI بنویسید «شاخص کدورت آب» و به‌جای NDCI بنویسید
+   «شاخص کلروفیل»؛ به‌جای MAD بنویسید «انحراف مطلق از میانه»).
+۵. اگر پرسش کاربر به زبان دیگری باشد، به همان زبان پاسخ دهید.
+"""
+
+
+def ask_water_quality_expert(question, analysis_json, chat_history):
+    from openai import OpenAI
+
+    client = OpenAI(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+
+    messages = [{"role": "system", "content": _build_expert_system_prompt(analysis_json)}]
+    for msg in chat_history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": question})
+
+    response = client.chat.completions.create(
+        model=EXPERT_CHAT_MODEL,
+        messages=messages,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content
+
+
+def render_expert_chat_tab():
+    """
+    صفحه «نظر متخصص آب»: به‌صورت خودکار خروجی اکسل پایش را می‌گیرد، پایپ‌لاین
+    تحلیل آماری موجود را روی آن اجرا می‌کند، خلاصه JSON تولید می‌کند، و یک
+    رابط گفتگو در اختیار کاربر قرار می‌دهد تا بر اساس آن خلاصه (و دانش عمومی
+    مدل) درباره کیفیت آب منطقه سؤال بپرسد.
+    """
+    st.header("🧑‍🔬 نظر متخصص آب")
+
+    if 'expert_chat_history' not in st.session_state:
+        st.session_state.expert_chat_history = []
+    if 'expert_analysis_json' not in st.session_state:
+        st.session_state.expert_analysis_json = None
+    if 'expert_analysis_signature' not in st.session_state:
+        st.session_state.expert_analysis_signature = None
+
+    results_turb = st.session_state.results.get(PARAM_TURBIDITY, [])
+    results_chl = st.session_state.results.get(PARAM_CHLOROPHYLL, [])
+
+    if not results_turb and not results_chl:
+        st.info("برای استفاده از این بخش، ابتدا پایش را اجرا کنید تا داده‌ای برای تحلیل وجود داشته باشد.")
+        return
+
+    signature = _expert_results_signature()
+    if st.session_state.expert_analysis_json is None or st.session_state.expert_analysis_signature != signature:
+        with st.spinner("در حال تحلیل آماری داده‌های سری زمانی..."):
+            try:
+                excel_bytes = generate_combined_timeseries_excel()
+                analysis = analyze_water_quality_from_bytes(excel_bytes)
+                st.session_state.expert_analysis_json = json.dumps(analysis, ensure_ascii=False, indent=2)
+                st.session_state.expert_analysis_signature = signature
+                st.session_state.expert_chat_history = []  # data changed -> start a fresh conversation
+            except Exception as e:
+                st.error(f"خطا در تحلیل داده‌ها: {e}")
+                return
+
+    with st.expander("📄 خلاصه تحلیل (JSON) ارسال‌شده به متخصص هوش مصنوعی"):
+        st.code(st.session_state.expert_analysis_json, language="json")
+
+    if st.button("🗑️ شروع گفتگوی جدید", key="expert_chat_reset"):
+        st.session_state.expert_chat_history = []
+        st.rerun()
+
+    st.divider()
+
+    for msg in st.session_state.expert_chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_question = st.chat_input("سؤال خود را درباره کیفیت آب این منطقه بپرسید...")
+    if user_question:
+        st.session_state.expert_chat_history.append({"role": "user", "content": user_question})
+        with st.chat_message("user"):
+            st.markdown(user_question)
+
+        with st.chat_message("assistant"):
+            with st.spinner("در حال بررسی توسط متخصص هوش مصنوعی..."):
+                try:
+                    answer = ask_water_quality_expert(
+                        user_question,
+                        st.session_state.expert_analysis_json,
+                        st.session_state.expert_chat_history[:-1]
+                    )
+                except Exception as e:
+                    answer = f"خطا در ارتباط با مدل هوش مصنوعی: {e}"
+                st.markdown(answer)
+
+        st.session_state.expert_chat_history.append({"role": "assistant", "content": answer})
+
+
+# =============================================================================
 # Main Application
 # =============================================================================
 def main():
@@ -1462,13 +1813,18 @@ def main():
                 use_container_width=True
             )
 
-        tab_turbidity, tab_chlorophyll = st.tabs(["🌊 کدورت آب (NDTI)", "🌿 کلروفیل"])
+        tab_turbidity, tab_chlorophyll, tab_expert = st.tabs(
+            ["🌊 کدورت آب (NDTI)", "🌿 کلروفیل", "💬 چت با متخصص"]
+        )
 
         with tab_turbidity:
             render_parameter_page(PARAM_TURBIDITY)
 
         with tab_chlorophyll:
             render_parameter_page(PARAM_CHLOROPHYLL)
+
+        with tab_expert:
+            render_expert_chat_tab()
 
 
 if __name__ == "__main__":
