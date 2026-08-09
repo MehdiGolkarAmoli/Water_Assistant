@@ -1080,6 +1080,10 @@ def generate_combined_timeseries_excel():
     body_font = Font(name='Arial')
     center = Alignment(horizontal='center')
 
+    center_lat, center_lon = _get_roi_center_coordinates()
+    lat_out = round(float(center_lat), 6) if center_lat is not None else "—"
+    lon_out = round(float(center_lon), 6) if center_lon is not None else "—"
+
     sections = [
         (PARAM_TURBIDITY, "کدورت (NDTI)", "میانگین NDTI"),
         (PARAM_CHLOROPHYLL, "کلروفیل (NDCI)", "میانگین NDCI"),
@@ -1089,7 +1093,7 @@ def generate_combined_timeseries_excel():
         ws = wb.create_sheet(title=sheet_name)
         ws.sheet_view.rightToLeft = True
 
-        headers = ["ماه", value_header, "پوشش آب (%)"]
+        headers = ["ماه", value_header, "پوشش آب (%)", "عرض جغرافیایی مرکز", "طول جغرافیایی مرکز"]
         ws.append(headers)
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=1, column=col_idx)
@@ -1101,7 +1105,7 @@ def generate_combined_timeseries_excel():
         for r in sorted(results, key=lambda x: x['month_name']):
             mean_val = r['mean_value']
             mean_out = round(float(mean_val), 4) if not np.isnan(mean_val) else "بدون داده"
-            ws.append([r['month_name'], mean_out, round(float(r['water_coverage']), 1)])
+            ws.append([r['month_name'], mean_out, round(float(r['water_coverage']), 1), lat_out, lon_out])
 
         if not results:
             ws.cell(row=2, column=1, value="داده‌ای موجود نیست.").font = body_font
@@ -1111,7 +1115,7 @@ def generate_combined_timeseries_excel():
                     cell.font = body_font
                     cell.alignment = center
 
-        column_widths = [14, 18, 16]
+        column_widths = [14, 18, 16, 20, 20]
         for i, w in enumerate(column_widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -1122,47 +1126,21 @@ def generate_combined_timeseries_excel():
     return buffer.getvalue()
 
 
-def generate_center_coordinates_excel(center_lat, center_lon, region_label="Selected Region"):
+def _get_roi_center_coordinates():
     """
-    Build a small Excel (.xlsx) file containing the latitude and longitude of
-    the center (centroid) of a region of interest. Returns workbook bytes for
-    st.download_button.
+    Return (lat, lon) of the center (centroid) of the region of interest used
+    for the current/most recent monitoring run, based on the polygon stored
+    in st.session_state.processing_config. Returns (None, None) if no run has
+    been configured yet.
     """
-    import io
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Center Coordinates"
-
-    header_font = Font(name='Arial', bold=True, color='FFFFFF')
-    header_fill = PatternFill(start_color='1F77B4', end_color='1F77B4', fill_type='solid')
-    body_font = Font(name='Arial')
-    center = Alignment(horizontal='center')
-
-    headers = ["Region", "Latitude", "Longitude"]
-    ws.append(headers)
-    for col_idx in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center
-
-    ws.append([region_label, round(float(center_lat), 6), round(float(center_lon), 6)])
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.font = body_font
-            cell.alignment = center
-
-    column_widths = [20, 14, 14]
-    for i, w in enumerate(column_widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    return buffer.getvalue()
+    config = st.session_state.get('processing_config')
+    if not config or not config.get('polygon_coords'):
+        return None, None
+    try:
+        centroid = Polygon(config['polygon_coords']).centroid
+        return centroid.y, centroid.x
+    except Exception:
+        return None, None
 
 
 def render_parameter_page(parameter_type):
@@ -1393,7 +1371,8 @@ def analyze_water_quality_from_bytes(excel_bytes):
         if len(numeric_cols) < 2 or df.empty:
             continue
         value_col = numeric_cols[0]
-        results[sheet] = _expert_analyze_sheet(df, value_col)
+        water_col = "پوشش آب (%)" if "پوشش آب (%)" in df.columns else None
+        results[sheet] = _expert_analyze_sheet(df, value_col, water_col=water_col)
         cleaned_frames[sheet] = df
 
     if len(cleaned_frames) >= 2:
@@ -1633,17 +1612,10 @@ def main():
     if st.session_state.drawn_polygons:
         st.subheader("📍 مناطق ذخیره‌شده")
         for i, p in enumerate(st.session_state.drawn_polygons):
-            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+            c1, c2, c3 = st.columns([3, 1, 1])
             centroid = p.centroid
             c1.write(f"**منطقه {i+1}**: ~{p.area * 111 * 111:.2f} کیلومتر مربع")
             c2.write(f"مرکز: ({centroid.y:.4f}, {centroid.x:.4f})")
-            c4.download_button(
-                "⬇️ Excel",
-                data=generate_center_coordinates_excel(centroid.y, centroid.x, f"منطقه {i+1}"),
-                file_name=f"region_{i+1}_center_coordinates.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"center_xls_{i}"
-            )
             if c3.button("🗑️", key=f"del_{i}", disabled=st.session_state.processing_in_progress):
                 st.session_state.drawn_polygons.pop(i)
                 if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
