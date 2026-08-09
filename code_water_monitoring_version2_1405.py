@@ -1122,6 +1122,49 @@ def generate_combined_timeseries_excel():
     return buffer.getvalue()
 
 
+def generate_center_coordinates_excel(center_lat, center_lon, region_label="Selected Region"):
+    """
+    Build a small Excel (.xlsx) file containing the latitude and longitude of
+    the center (centroid) of a region of interest. Returns workbook bytes for
+    st.download_button.
+    """
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Center Coordinates"
+
+    header_font = Font(name='Arial', bold=True, color='FFFFFF')
+    header_fill = PatternFill(start_color='1F77B4', end_color='1F77B4', fill_type='solid')
+    body_font = Font(name='Arial')
+    center = Alignment(horizontal='center')
+
+    headers = ["Region", "Latitude", "Longitude"]
+    ws.append(headers)
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+
+    ws.append([region_label, round(float(center_lat), 6), round(float(center_lon), 6)])
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.font = body_font
+            cell.alignment = center
+
+    column_widths = [20, 14, 14]
+    for i, w in enumerate(column_widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
 def render_parameter_page(parameter_type):
     """
     Full page for one parameter, in the required order:
@@ -1590,10 +1633,17 @@ def main():
     if st.session_state.drawn_polygons:
         st.subheader("📍 مناطق ذخیره‌شده")
         for i, p in enumerate(st.session_state.drawn_polygons):
-            c1, c2, c3 = st.columns([3, 1, 1])
+            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
             centroid = p.centroid
             c1.write(f"**منطقه {i+1}**: ~{p.area * 111 * 111:.2f} کیلومتر مربع")
             c2.write(f"مرکز: ({centroid.y:.4f}, {centroid.x:.4f})")
+            c4.download_button(
+                "⬇️ Excel",
+                data=generate_center_coordinates_excel(centroid.y, centroid.x, f"منطقه {i+1}"),
+                file_name=f"region_{i+1}_center_coordinates.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"center_xls_{i}"
+            )
             if c3.button("🗑️", key=f"del_{i}", disabled=st.session_state.processing_in_progress):
                 st.session_state.drawn_polygons.pop(i)
                 if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
