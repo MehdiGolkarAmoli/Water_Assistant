@@ -1421,31 +1421,38 @@ def _expert_results_signature():
 # نظر متخصص آب — LLM Agent Chat (LangGraph ReAct agent, OpenAI-compatible)
 # =============================================================================
 # NOTE ON CREDENTIALS: this app is hosted on a Posit server that cannot read a
-# local .env file, so the API base URL / keys are hardcoded below instead of
-# being loaded through python-dotenv, per explicit request. If this project's
-# git repo is ever shared or made public, consider moving these values to
-# Posit Connect's own "Environment Variables" panel (Settings → Vars) instead
-# of leaving live keys in source — that still avoids the .env problem without
-# exposing the keys in version control.
+# local .env file, so the API base URL / keys (OpenAI-compatible LLM, Tavily,
+# OpenWeatherMap) are all hardcoded below and read directly from this file
+# instead of being loaded through python-dotenv or environment variables, per
+# explicit request. If this project's git repo is ever shared or made public,
+# consider moving these values to Posit Connect's own "Environment Variables"
+# panel (Settings → Vars) instead of leaving live keys in source — that still
+# avoids the .env problem without exposing the keys in version control.
 OPENAI_BASE_URL = "https://api.avalai.ir/v1"
 OPENAI_API_KEY = "aa-xLsSw3ad4txKKuwvHY7cPGy1StemeS3xtuChVf9utHKOd3Cr"
 EXPERT_CHAT_MODEL = "gpt-5.2"  # change to whichever model your endpoint provides
 
-# Tavily web search key, used by the agent's "reverse geocode / general
-# climate context" tool. Replace with your own key (or move to Posit
-# Connect's Environment Variables panel as noted above).
-TAVILY_API_KEY = "REPLACE_WITH_YOUR_TAVILY_API_KEY"
+# Tavily web search key, used by the agent's general-purpose web search tool
+# (qualitative/general climate context). Hardcoded directly here — read from
+# the code, not from a .env file — because the Posit server this app is
+# deployed on cannot read a local .env file.
+TAVILY_API_KEY = "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"
+
+# OpenWeatherMap Geocoding API key, used by the agent's reverse-geocoding
+# tool (lat/lon -> city/region/country name). Also hardcoded directly here
+# for the same Posit-server reason as above.
+OPENWEATHER_API_KEY = "5fce9bd0bcda8e2cd43468bf50755c82"
 
 
 def _build_agent_system_prompt(analysis_json):
     """
     Persian system prompt for the water-quality expert agent. Combines the
     original evidence-based / no-hallucination rules with instructions for
-    when to use each of the two available tools (web search, historical
-    weather). The statistical analysis JSON (including, when available,
-    center_latitude / center_longitude of the monitored region) is embedded
-    directly in the prompt, exactly as in the previous non-agent version —
-    it is NOT exposed as a separate callable tool.
+    when to use each of the three available tools (reverse geocoding, web
+    search, historical weather). The statistical analysis JSON (including,
+    when available, center_latitude / center_longitude of the monitored
+    region) is embedded directly in the prompt, exactly as in the previous
+    non-agent version — it is NOT exposed as a separate callable tool.
     """
     return f"""شما یک متخصص باتجربه در زمینه کیفیت آب، سنجش‌ازدور ماهواره‌ای (سنتینل-۲)، و اقلیم‌شناسی هستید.
 
@@ -1457,11 +1464,17 @@ center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند
 داده‌های تحلیل:
 {analysis_json}
 
-شما به دو ابزار دسترسی دارید:
-۱. جست‌وجوی وب (Tavily): برای یافتن نام منطقه/شهر/کشور بر اساس مختصات جغرافیایی مرکز منطقه (جست‌وجوی
-   معکوسِ مکان)، و نیز برای اطلاعات کیفی و کلی اقلیمی (نوع اقلیم، طبقه‌بندی کوپن، الگوهای فصلی بارش و
-   دما) که به‌صورت عددی در دسترس نیست.
-۲. get_monthly_weather_stats: ابزار دقیقِ داده‌های هواشناسی تاریخی (بایگانی Open-Meteo)، که برای یک
+شما به سه ابزار دسترسی دارید:
+۱. reverse_geocode: یافتن دقیق نام شهر/منطقه/کشور بر اساس یک مختصات جغرافیایی (عرض و طول جغرافیایی)،
+   با استفاده از سرویس Geocoding شرکت OpenWeatherMap. هر زمان که نیاز به شناسایی نام منطقه‌ی مورد
+   مطالعه بر اساس center_latitude / center_longitude موجود در داده‌های تحلیل بالا داشتید، ابتدا از
+   همین ابزار استفاده کنید — نه حدس زدن و نه جست‌وجوی وب — چون این ابزار مستقیماً و با دقت بالا نام
+   مکان را از روی مختصات برمی‌گرداند.
+۲. tavily_search (جست‌وجوی وب عمومی): برای اطلاعات کیفی و کلی اقلیمی (نوع اقلیم، طبقه‌بندی کوپن،
+   الگوهای فصلی بارش و دما، رویدادهای خاص مانند سیل یا خشک‌سالی در آن منطقه) که به‌صورت عددی در دسترس
+   نیست و باید از منابع وب یافت شود. همچنین برای هر پرسش عمومی دیگری که نیاز به اطلاعات به‌روز از وب
+   دارد.
+۳. get_monthly_weather_stats: ابزار دقیقِ داده‌های هواشناسی تاریخی (بایگانی Open-Meteo)، که برای یک
    مختصات جغرافیایی و یک سال/ماه مشخص، دمای بیشینه/کمینه روزانه، بارش، برف، سرعت باد و همچنین درصد
    روزهای برفی آن ماه را برمی‌گرداند. هرگاه کاربر درباره‌ی مقادیر عددی دقیق یک ماه/سال مشخص (دما، بارش،
    سرعت باد، مقدار برف، درصد روزهای برفی) در منطقه‌ی مورد مطالعه سؤال کرد، از این ابزار استفاده کنید —
@@ -1474,10 +1487,13 @@ center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند
   (برای نمونه: «آیا افزایش کدورت در فلان ماه می‌تواند ناشی از بارش شدید یا ذوب برف باشد؟»، «اقلیم این
   منطقه چگونه است؟»، «نام این منطقه چیست؟»). برای سؤال‌هایی که صرفاً درباره‌ی خودِ شاخص کدورت/کلروفیل و
   روند آن‌هاست و پاسخ در داده‌های تحلیل بالا موجود است، نیازی به فراخوانی هیچ ابزاری نیست.
-- هرگز مختصات یا نام منطقه را حدس نزنید؛ برای شناسایی نام منطقه از ابزار جست‌وجوی وب استفاده کنید.
-- در صورت نیاز به داده‌ی هواشناسی برای تفسیر یک نوسان یا ناهنجاری، ابتدا در صورت نامشخص بودن نام/موقعیت
-  منطقه آن را با جست‌وجوی وب پیدا کنید، سپس داده‌ی عددی دقیق را با get_monthly_weather_stats بگیرید، و
-  در صورت نیاز، زمینه‌ی کلی اقلیمی را نیز با جست‌وجوی وب تکمیل کنید.
+- هرگز مختصات یا نام منطقه را حدس نزنید. برای شناسایی نام منطقه، همیشه ابتدا از reverse_geocode استفاده
+  کنید؛ فقط اگر reverse_geocode نتیجه‌ای نداد یا کاربر اطلاعات کیفی/توصیفی بیشتری خواست، سراغ
+  tavily_search بروید.
+- ترتیب پیشنهادی هنگام نیاز به تفسیر یک نوسان یا ناهنجاری با کمک اطلاعات مکانی/هواشناسی: ابتدا در صورت
+  نامشخص بودن نام منطقه، آن را با reverse_geocode شناسایی کنید؛ سپس داده‌ی عددی دقیق مربوط به بازه‌ی
+  زمانی موردنظر را با get_monthly_weather_stats بگیرید؛ و در صورت نیاز، زمینه‌ی کلی اقلیمی یا رویدادهای
+  خاص را نیز با tavily_search تکمیل کنید.
 
 دستورالعمل‌های پاسخ‌گویی:
 ۱. پاسخ خود را در درجه‌ی اول بر پایه‌ی داده‌های JSON بالا و در صورت لزوم نتایج ابزارها بنا کنید و از
@@ -1499,13 +1515,18 @@ center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند
 
 def _get_expert_agent(analysis_json):
     """
-    Build a fresh LangGraph ReAct agent with the two tools (Tavily web
-    search + Open-Meteo historical weather). Rebuilt on every call since the
-    system prompt embeds the current analysis JSON, which changes whenever
-    new monitoring results are generated (see _expert_results_signature()).
-    Building a ReAct agent is cheap (no network calls happen until a tool is
-    actually invoked), so recreating it per question keeps the code simple
-    and avoids stale-prompt bugs.
+    Build a fresh LangGraph ReAct agent with the three tools: OpenWeatherMap
+    reverse geocoding, Tavily web search, and Open-Meteo historical weather.
+    Rebuilt on every call since the system prompt embeds the current
+    analysis JSON, which changes whenever new monitoring results are
+    generated (see _expert_results_signature()). Building a ReAct agent is
+    cheap (no network calls happen until a tool is actually invoked), so
+    recreating it per question keeps the code simple and avoids
+    stale-prompt bugs.
+
+    API keys (TAVILY_API_KEY, OPENWEATHER_API_KEY) are hardcoded constants
+    read directly from this file rather than from a .env file, since the
+    Posit server this app runs on cannot read a local .env.
 
     Requires: langchain, langchain-openai, langgraph, langchain-tavily
     (pip install langchain langchain-openai langgraph langchain-tavily)
@@ -1516,7 +1537,8 @@ def _get_expert_agent(analysis_json):
     from langchain_tavily import TavilySearch
     from langgraph.prebuilt import create_react_agent
 
-    # TavilySearch reads its key from the environment.
+    # TavilySearch reads its key from the environment — set it directly from
+    # the hardcoded constant above (no .env involved).
     os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
 
     model = init_chat_model(
@@ -1528,6 +1550,42 @@ def _get_expert_agent(analysis_json):
     )
 
     tavily_tool = TavilySearch(max_results=5, topic="general")
+
+    @tool
+    def reverse_geocode(lat: float, lon: float) -> str:
+        """Reverse-geocode a latitude/longitude pair into a place name
+        (city/town/village, state/province, and country) using the
+        OpenWeatherMap Geocoding API. Use this whenever you need to identify
+        the name of the region/city/country for a given set of coordinates
+        (e.g. the center_latitude / center_longitude of the monitored water
+        body) — it is faster and more precise than a general web search for
+        this specific purpose."""
+        params = {
+            "lat": lat,
+            "lon": lon,
+            "limit": 5,
+            "appid": OPENWEATHER_API_KEY,
+        }
+        r = requests.get("https://api.openweathermap.org/geo/1.0/reverse", params=params, timeout=30)
+        r.raise_for_status()
+        results = r.json()
+
+        if not results:
+            return str({"lat": lat, "lon": lon, "results": [], "note": "No place name found for these coordinates."})
+
+        return str({
+            "lat": lat,
+            "lon": lon,
+            "results": [
+                {
+                    "name": item.get("name"),
+                    "state": item.get("state"),
+                    "country": item.get("country"),
+                    "local_names": item.get("local_names"),
+                }
+                for item in results
+            ],
+        })
 
     @tool
     def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
@@ -1567,7 +1625,7 @@ def _get_expert_agent(analysis_json):
         }
         return str(data)
 
-    tools = [tavily_tool, get_monthly_weather_stats]
+    tools = [reverse_geocode, tavily_tool, get_monthly_weather_stats]
     system_prompt = _build_agent_system_prompt(analysis_json)
     return create_react_agent(model, tools, prompt=system_prompt)
 
@@ -1615,12 +1673,14 @@ def _inject_persian_chat_css():
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 17px;
+            font-size: 22px;
+            line-height: 1.9;
         }
         [data-testid="stChatInput"] textarea {
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 20px;
         }
         </style>
         """,
@@ -1633,9 +1693,10 @@ def render_expert_chat_tab():
     صفحه «نظر متخصص آب»: به‌صورت خودکار خروجی اکسل پایش را می‌گیرد، پایپ‌لاین
     تحلیل آماری موجود را روی آن اجرا می‌کند، خلاصه JSON تولید می‌کند، و یک
     رابط گفتگو با یک عامل هوشمند (LangGraph ReAct agent) در اختیار کاربر
-    قرار می‌دهد. این عامل علاوه بر خلاصه JSON، به دو ابزار نیز دسترسی دارد:
-    جست‌وجوی وب (برای شناسایی نام منطقه و زمینه‌ی کلی اقلیمی) و دریافت
-    داده‌های دقیق هواشناسی تاریخی (Open-Meteo) برای مختصات مرکز منطقه.
+    قرار می‌دهد. این عامل علاوه بر خلاصه JSON، به سه ابزار نیز دسترسی دارد:
+    شناسایی نام منطقه از روی مختصات (reverse geocoding با OpenWeatherMap)،
+    جست‌وجوی وب برای زمینه‌ی کلی اقلیمی (Tavily)، و دریافت داده‌های دقیق
+    هواشناسی تاریخی (Open-Meteo) برای مختصات مرکز منطقه.
     """
     _inject_persian_chat_css()
 
