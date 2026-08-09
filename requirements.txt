@@ -13,3 +13,4 @@ openpyxl
 pymannkendall
 langchain-openai
 langchain
+langchain_tavily
