@@ -1350,6 +1350,13 @@ def analyze_water_quality_from_bytes(excel_bytes):
     than a number, which would otherwise turn the whole column non-numeric
     and silently drop that parameter from the analysis. Those cells are
     coerced to NaN and excluded here instead.
+
+    Also mirrors the notebook's latest addition: the center coordinates of
+    the region of interest (columns "عرض جغرافیایی مرکز" / "طول جغرافیایی
+    مرکز" in the exported Excel) are lifted into top-level
+    "center_latitude" / "center_longitude" keys of the returned summary, so
+    the location-aware chat agent can use them directly (e.g. to fetch
+    historical weather for that exact point) without re-parsing the sheet.
     """
     import io
     import pandas as pd
@@ -1382,6 +1389,18 @@ def analyze_water_quality_from_bytes(excel_bytes):
         col2 = df2.select_dtypes(include=np.number).columns[0]
         results["relationship"] = _expert_compute_correlation_by_date(df1, col1, df2, col2)
 
+    # --- Lift region center coordinates to the top level (for the chat agent) ---
+    if cleaned_frames:
+        first_sheet_df = list(cleaned_frames.values())[0]
+        lat_col = "عرض جغرافیایی مرکز"
+        lon_col = "طول جغرافیایی مرکز"
+        if lat_col in first_sheet_df.columns and lon_col in first_sheet_df.columns:
+            lat_vals = pd.to_numeric(first_sheet_df[lat_col], errors='coerce').dropna()
+            lon_vals = pd.to_numeric(first_sheet_df[lon_col], errors='coerce').dropna()
+            if not lat_vals.empty and not lon_vals.empty:
+                results["center_latitude"] = float(lat_vals.iloc[0])
+                results["center_longitude"] = float(lon_vals.iloc[0])
+
     return results
 
 
@@ -1399,70 +1418,227 @@ def _expert_results_signature():
 
 
 # =============================================================================
-# نظر متخصص آب — LLM Chat (OpenAI-compatible endpoint)
+# نظر متخصص آب — LLM Agent Chat (LangGraph ReAct agent, OpenAI-compatible)
 # =============================================================================
 # NOTE ON CREDENTIALS: this app is hosted on a Posit server that cannot read a
-# local .env file, so the API base URL / key are hardcoded below instead of
+# local .env file, so the API base URL / keys are hardcoded below instead of
 # being loaded through python-dotenv, per explicit request. If this project's
-# git repo is ever shared or made public, consider moving these two values to
+# git repo is ever shared or made public, consider moving these values to
 # Posit Connect's own "Environment Variables" panel (Settings → Vars) instead
-# of leaving a live key in source — that still avoids the .env problem
-# without exposing the key in version control.
+# of leaving live keys in source — that still avoids the .env problem without
+# exposing the keys in version control.
 OPENAI_BASE_URL = "https://api.avalai.ir/v1"
 OPENAI_API_KEY = "aa-xLsSw3ad4txKKuwvHY7cPGy1StemeS3xtuChVf9utHKOd3Cr"
-EXPERT_CHAT_MODEL = "gpt-4o-mini"  # change to whichever model your existing analysis script used
+EXPERT_CHAT_MODEL = "gpt-5.2"  # change to whichever model your endpoint provides
+
+# Tavily web search key, used by the agent's "reverse geocode / general
+# climate context" tool. Replace with your own key (or move to Posit
+# Connect's Environment Variables panel as noted above).
+TAVILY_API_KEY = "REPLACE_WITH_YOUR_TAVILY_API_KEY"
 
 
-def _build_expert_system_prompt(analysis_json):
-    return f"""شما یک متخصص باتجربه در زمینه کیفیت آب و سنجش‌ازدور ماهواره‌ای (سنتینل-۲) هستید.
+def _build_agent_system_prompt(analysis_json):
+    """
+    Persian system prompt for the water-quality expert agent. Combines the
+    original evidence-based / no-hallucination rules with instructions for
+    when to use each of the two available tools (web search, historical
+    weather). The statistical analysis JSON (including, when available,
+    center_latitude / center_longitude of the monitored region) is embedded
+    directly in the prompt, exactly as in the previous non-agent version —
+    it is NOT exposed as a separate callable tool.
+    """
+    return f"""شما یک متخصص باتجربه در زمینه کیفیت آب، سنجش‌ازدور ماهواره‌ای (سنتینل-۲)، و اقلیم‌شناسی هستید.
 
-در ادامه، خلاصه‌ تحلیل آماری سری زمانی شاخص کدورت آب و شاخص کلروفیل یک بدنه آبی، به‌صورت JSON در
-اختیار شما قرار گرفته است. این خلاصه شامل نتیجه آزمون روند من-کندال، ناهنجاری‌های شناسایی‌شده
-(بر پایه انحراف مطلق از میانه)، الگوی فصلی چندساله، آمار توصیفی، و همبستگی بین دو شاخص است.
+در ادامه، خلاصه‌ی تحلیل آماری سری زمانی شاخص کدورت آب و شاخص کلروفیل یک بدنه‌ی آبی، به‌صورت JSON در
+اختیار شما قرار گرفته است. این خلاصه شامل مختصات مرکز منطقه (کلیدهای center_latitude و
+center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند من-کندال، ناهنجاری‌های شناسایی‌شده (بر پایه‌ی
+انحراف مطلق از میانه)، الگوی فصلی چندساله، آمار توصیفی، و همبستگی بین دو شاخص است.
 
 داده‌های تحلیل:
 {analysis_json}
 
+شما به دو ابزار دسترسی دارید:
+۱. جست‌وجوی وب (Tavily): برای یافتن نام منطقه/شهر/کشور بر اساس مختصات جغرافیایی مرکز منطقه (جست‌وجوی
+   معکوسِ مکان)، و نیز برای اطلاعات کیفی و کلی اقلیمی (نوع اقلیم، طبقه‌بندی کوپن، الگوهای فصلی بارش و
+   دما) که به‌صورت عددی در دسترس نیست.
+۲. get_monthly_weather_stats: ابزار دقیقِ داده‌های هواشناسی تاریخی (بایگانی Open-Meteo)، که برای یک
+   مختصات جغرافیایی و یک سال/ماه مشخص، دمای بیشینه/کمینه روزانه، بارش، برف، سرعت باد و همچنین درصد
+   روزهای برفی آن ماه را برمی‌گرداند. هرگاه کاربر درباره‌ی مقادیر عددی دقیق یک ماه/سال مشخص (دما، بارش،
+   سرعت باد، مقدار برف، درصد روزهای برفی) در منطقه‌ی مورد مطالعه سؤال کرد، از این ابزار استفاده کنید —
+   نه جست‌وجوی وب. برای مختصات، از center_latitude / center_longitude موجود در داده‌های تحلیل بالا
+   استفاده کنید (در صورت نبودن این مقادیر در داده‌ها، صریحاً به کاربر بگویید که مختصات منطقه در دسترس
+   نیست).
+
+دستورالعمل‌های استفاده از ابزارها:
+- ابزارها را فقط زمانی فراخوانی کنید که پاسخ سؤال کاربر واقعاً به اطلاعات مکانی یا هواشناسی نیاز دارد
+  (برای نمونه: «آیا افزایش کدورت در فلان ماه می‌تواند ناشی از بارش شدید یا ذوب برف باشد؟»، «اقلیم این
+  منطقه چگونه است؟»، «نام این منطقه چیست؟»). برای سؤال‌هایی که صرفاً درباره‌ی خودِ شاخص کدورت/کلروفیل و
+  روند آن‌هاست و پاسخ در داده‌های تحلیل بالا موجود است، نیازی به فراخوانی هیچ ابزاری نیست.
+- هرگز مختصات یا نام منطقه را حدس نزنید؛ برای شناسایی نام منطقه از ابزار جست‌وجوی وب استفاده کنید.
+- در صورت نیاز به داده‌ی هواشناسی برای تفسیر یک نوسان یا ناهنجاری، ابتدا در صورت نامشخص بودن نام/موقعیت
+  منطقه آن را با جست‌وجوی وب پیدا کنید، سپس داده‌ی عددی دقیق را با get_monthly_weather_stats بگیرید، و
+  در صورت نیاز، زمینه‌ی کلی اقلیمی را نیز با جست‌وجوی وب تکمیل کنید.
+
 دستورالعمل‌های پاسخ‌گویی:
-۱. پاسخ خود را در درجه اول بر پایه داده‌های JSON بالا بنا کنید و در کنار آن از دانش عمومی خود درباره
-   کیفیت آب، سنجش‌ازدور و علوم محیط‌زیست برای تفسیر و تکمیل پاسخ استفاده کنید.
+۱. پاسخ خود را در درجه‌ی اول بر پایه‌ی داده‌های JSON بالا و در صورت لزوم نتایج ابزارها بنا کنید و از
+   دانش عمومی خود درباره‌ی کیفیت آب، سنجش‌ازدور و علوم محیط‌زیست برای تفسیر و تکمیل پاسخ استفاده کنید.
 ۲. تفسیر را مبتنی بر شواهد ارائه دهید؛ به‌جای نسبت‌دادن هر نوسان یا ناهنجاری به‌طور پیش‌فرض به «خطای
-   حسگر»، ابتدا توضیح‌های محیطی و هیدرولوژیکی محتمل را در نظر بگیرید (رواناب فصلی، بارندگی، ذوب برف،
-   رسوب‌گذاری، شکوفایی جلبکی و مانند آن).
-۳. اگر داده کافی برای نتیجه‌گیری قطعی وجود ندارد (برای نمونه کمتر از ۲۴ ماه برای آزمون فصلی)، این
-   محدودیت را صریح بیان کنید؛ حدس قطعی نزنید.
-۴. اگر پرسش کاربر به زبان فارسی باشد، پاسخ باید کاملاً و فقط به زبان فارسی نوشته شود و از هیچ مخفف یا
-   واژه انگلیسی استفاده نشود (برای نمونه به‌جای NDTI بنویسید «شاخص کدورت آب» و به‌جای NDCI بنویسید
+   حسگر»، ابتدا توضیح‌های محیطی، هیدرولوژیکی و هواشناسی محتمل را در نظر بگیرید (رواناب فصلی، بارندگی،
+   ذوب برف، سیل، رسوب‌گذاری، شکوفایی جلبکی و مانند آن).
+۳. اگر داده‌ی کافی برای نتیجه‌گیری قطعی وجود ندارد (برای نمونه کمتر از ۲۴ ماه برای آزمون فصلی، یا
+   نتایج ابزارها ناکافی/متناقض بود)، این محدودیت را صریح بیان کنید؛ حدس قطعی نزنید و هیچ واقعیتی را از
+   خود نسازید.
+۴. در پاسخ نهایی، در صورت استفاده از ابزارها، بین «شناسایی منطقه»، «داده‌ی عددی دقیق هواشناسی برای
+   بازه‌ی درخواستی» و «زمینه‌ی کلی اقلیمی» تمایز قائل شوید.
+۵. اگر پرسش کاربر به زبان فارسی باشد، پاسخ باید کاملاً و فقط به زبان فارسی نوشته شود و از هیچ مخفف یا
+   واژه‌ی انگلیسی استفاده نشود (برای نمونه به‌جای NDTI بنویسید «شاخص کدورت آب» و به‌جای NDCI بنویسید
    «شاخص کلروفیل»؛ به‌جای MAD بنویسید «انحراف مطلق از میانه»).
-۵. اگر پرسش کاربر به زبان دیگری باشد، به همان زبان پاسخ دهید.
+۶. اگر پرسش کاربر به زبان دیگری باشد، به همان زبان پاسخ دهید.
 """
 
 
-def ask_water_quality_expert(question, analysis_json, chat_history):
-    from openai import OpenAI
+def _get_expert_agent(analysis_json):
+    """
+    Build a fresh LangGraph ReAct agent with the two tools (Tavily web
+    search + Open-Meteo historical weather). Rebuilt on every call since the
+    system prompt embeds the current analysis JSON, which changes whenever
+    new monitoring results are generated (see _expert_results_signature()).
+    Building a ReAct agent is cheap (no network calls happen until a tool is
+    actually invoked), so recreating it per question keeps the code simple
+    and avoids stale-prompt bugs.
 
-    client = OpenAI(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+    Requires: langchain, langchain-openai, langgraph, langchain-tavily
+    (pip install langchain langchain-openai langgraph langchain-tavily)
+    """
+    import calendar
+    from langchain.chat_models import init_chat_model
+    from langchain_core.tools import tool
+    from langchain_tavily import TavilySearch
+    from langgraph.prebuilt import create_react_agent
 
-    messages = [{"role": "system", "content": _build_expert_system_prompt(analysis_json)}]
-    for msg in chat_history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": question})
+    # TavilySearch reads its key from the environment.
+    os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
 
-    response = client.chat.completions.create(
+    model = init_chat_model(
         model=EXPERT_CHAT_MODEL,
-        messages=messages,
+        model_provider="openai",
+        base_url=OPENAI_BASE_URL,
+        api_key=OPENAI_API_KEY,
         temperature=0.3,
     )
-    return response.choices[0].message.content
+
+    tavily_tool = TavilySearch(max_results=5, topic="general")
+
+    @tool
+    def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
+        """Get daily historical weather data (max/min temperature, precipitation,
+        snowfall, wind speed) for a given latitude/longitude and a specific
+        year/month, using the Open-Meteo historical archive API. Also returns
+        the number of days with snowfall and the snow-day percentage for that
+        month. Use this for any request needing exact numeric weather values
+        (e.g. 'snow percentage in 2024-01') rather than web search."""
+        last_day = calendar.monthrange(year, month)[1]
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": f"{year}-{month:02d}-01",
+            "end_date": f"{year}-{month:02d}-{last_day}",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
+            "timezone": "auto",
+        }
+        r = requests.get("https://archive-api.open-meteo.com/v1/archive", params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+
+        daily = data.get("daily", {})
+        snowfall = daily.get("snowfall_sum", [])
+        total_days = len(daily.get("time", []))
+        snow_days = sum(1 for s in snowfall if s and s > 0)
+        snow_pct = round(100 * snow_days / total_days, 1) if total_days else None
+
+        data["summary"] = {
+            "total_days": total_days,
+            "snow_days": snow_days,
+            "snow_day_percentage": snow_pct,
+            "temperature_max_monthly": daily.get("temperature_2m_max"),
+            "temperature_min_monthly": daily.get("temperature_2m_min"),
+            "precipitation_monthly": daily.get("precipitation_sum"),
+            "snowfall_monthly": snowfall,
+        }
+        return str(data)
+
+    tools = [tavily_tool, get_monthly_weather_stats]
+    system_prompt = _build_agent_system_prompt(analysis_json)
+    return create_react_agent(model, tools, prompt=system_prompt)
+
+
+def ask_water_quality_expert(question, analysis_json, chat_history):
+    """
+    Send `question` to the water-quality expert agent, giving it the running
+    chat history for context. chat_history is a list of
+    {"role": "user"/"assistant", "content": ...} dicts — the same shape
+    already used elsewhere in the app for st.session_state.expert_chat_history,
+    so no other call site needs to change.
+    """
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    agent = _get_expert_agent(analysis_json)
+
+    messages = []
+    for msg in chat_history:
+        if msg["role"] == "user":
+            messages.append(HumanMessage(content=msg["content"]))
+        else:
+            messages.append(AIMessage(content=msg["content"]))
+    messages.append(HumanMessage(content=question))
+
+    result = agent.invoke({"messages": messages})
+    return result["messages"][-1].content
+
+
+def _inject_persian_chat_css():
+    """
+    Right-to-left layout + Persian font for the چت با متخصص tab. Streamlit's
+    built-in chat elements (st.chat_message / st.chat_input) are LTR by
+    default, which misaligns Persian text; this forces RTL direction and a
+    Persian-friendly font stack (falls back gracefully if "B Nazanin" is not
+    installed on the viewer's system, since it is not a free web font).
+    """
+    st.markdown(
+        """
+        <style>
+        [data-testid="stChatMessage"],
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li,
+        [data-testid="stChatMessage"] div,
+        [data-testid="stChatMessage"] span {
+            direction: rtl;
+            text-align: right;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 17px;
+        }
+        [data-testid="stChatInput"] textarea {
+            direction: rtl;
+            text-align: right;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_expert_chat_tab():
     """
     صفحه «نظر متخصص آب»: به‌صورت خودکار خروجی اکسل پایش را می‌گیرد، پایپ‌لاین
     تحلیل آماری موجود را روی آن اجرا می‌کند، خلاصه JSON تولید می‌کند، و یک
-    رابط گفتگو در اختیار کاربر قرار می‌دهد تا بر اساس آن خلاصه (و دانش عمومی
-    مدل) درباره کیفیت آب منطقه سؤال بپرسد.
+    رابط گفتگو با یک عامل هوشمند (LangGraph ReAct agent) در اختیار کاربر
+    قرار می‌دهد. این عامل علاوه بر خلاصه JSON، به دو ابزار نیز دسترسی دارد:
+    جست‌وجوی وب (برای شناسایی نام منطقه و زمینه‌ی کلی اقلیمی) و دریافت
+    داده‌های دقیق هواشناسی تاریخی (Open-Meteo) برای مختصات مرکز منطقه.
     """
+    _inject_persian_chat_css()
+
     st.header("🧑‍🔬 نظر متخصص آب")
 
     if 'expert_chat_history' not in st.session_state:
@@ -1520,7 +1696,7 @@ def render_expert_chat_tab():
                         st.session_state.expert_chat_history[:-1]
                     )
                 except Exception as e:
-                    answer = f"خطا در ارتباط با مدل هوش مصنوعی: {e}"
+                    answer = f"خطا در ارتباط با عامل هوش مصنوعی: {e}"
                 st.markdown(answer)
 
         st.session_state.expert_chat_history.append({"role": "assistant", "content": answer})
