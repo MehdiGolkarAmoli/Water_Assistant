@@ -1603,20 +1603,19 @@ def _get_expert_agent(analysis_json):
 
     @tool
     def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
-    """Get daily historical weather data (max/min temperature, precipitation,
+   """Get daily historical weather data (max/min temperature, precipitation,
     snowfall, wind speed) for a given latitude/longitude and a specific
     year/month, using the Open-Meteo historical archive API. Also returns
     the number of days with snowfall and the snow-day percentage for that
     month. Use this for any request needing exact numeric weather values
     (e.g. 'snow percentage in 2024-01') rather than web search.
     """
+  
 
-      try:
-        
+    try:
         data = _fetch_monthly_weather_cached(lat, lon, year, month)
-      except Exception as e:
-        
-        return str({"error": f"weather service unavailable or timed out: {e}"})
+    except Exception as e:
+      return str({"error": f"weather service unavailable or timed out: {e}"})
            
       last_day = calendar.monthrange(year, month)[1]
       params = {
