@@ -1611,9 +1611,11 @@ def _get_expert_agent(analysis_json):
     (e.g. 'snow percentage in 2024-01') rather than web search.
     """
 
-    try:
+      try:
+        
         data = _fetch_monthly_weather_cached(lat, lon, year, month)
-    except Exception as e:
+      except Exception as e:
+        
         return str({"error": f"weather service unavailable or timed out: {e}"})
            
       last_day = calendar.monthrange(year, month)[1]
