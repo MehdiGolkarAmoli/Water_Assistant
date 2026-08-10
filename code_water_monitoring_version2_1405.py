@@ -1603,49 +1603,46 @@ def _get_expert_agent(analysis_json):
 
     @tool
     def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
-   """Get daily historical weather data (max/min temperature, precipitation,
-    snowfall, wind speed) for a given latitude/longitude and a specific
-    year/month, using the Open-Meteo historical archive API. Also returns
-    the number of days with snowfall and the snow-day percentage for that
-    month. Use this for any request needing exact numeric weather values
-    (e.g. 'snow percentage in 2024-01') rather than web search.
-    """
-  
-
+     """Get daily historical weather data (max/min temperature, precipitation,
+        snowfall, wind speed) for a given latitude/longitude and a specific
+        year/month, using the Open-Meteo historical archive API. Also returns
+        the number of days with snowfall and the snow-day percentage for that
+        month. Use this for any request needing exact numeric weather values
+        (e.g. 'snow percentage in 2024-01') rather than web search."""
     try:
         data = _fetch_monthly_weather_cached(lat, lon, year, month)
     except Exception as e:
-      return str({"error": f"weather service unavailable or timed out: {e}"})
-           
-      last_day = calendar.monthrange(year, month)[1]
-      params = {
-          "latitude": lat,
-          "longitude": lon,
-          "start_date": f"{year}-{month:02d}-01",
-          "end_date": f"{year}-{month:02d}-{last_day}",
-          "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
-          "timezone": "auto",
-      }
-      r = requests.get("https://archive-api.open-meteo.com/v1/archive", params=params, timeout=30)
-      r.raise_for_status()
-      data = r.json()
+        return str({"error": f"weather service unavailable or timed out: {e}"})
+       
+        last_day = calendar.monthrange(year, month)[1]
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": f"{year}-{month:02d}-01",
+            "end_date": f"{year}-{month:02d}-{last_day}",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
+            "timezone": "auto",
+        }
+        r = requests.get("https://archive-api.open-meteo.com/v1/archive", params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
 
-      daily = data.get("daily", {})
-      snowfall = daily.get("snowfall_sum", [])
-      total_days = len(daily.get("time", []))
-      snow_days = sum(1 for s in snowfall if s and s > 0)
-      snow_pct = round(100 * snow_days / total_days, 1) if total_days else None
+        daily = data.get("daily", {})
+        snowfall = daily.get("snowfall_sum", [])
+        total_days = len(daily.get("time", []))
+        snow_days = sum(1 for s in snowfall if s and s > 0)
+        snow_pct = round(100 * snow_days / total_days, 1) if total_days else None
 
-      data["summary"] = {
-          "total_days": total_days,
-          "snow_days": snow_days,
-          "snow_day_percentage": snow_pct,
-          "temperature_max_monthly": daily.get("temperature_2m_max"),
-          "temperature_min_monthly": daily.get("temperature_2m_min"),
-          "precipitation_monthly": daily.get("precipitation_sum"),
-          "snowfall_monthly": snowfall,
-      }
-      return str(data)
+        data["summary"] = {
+            "total_days": total_days,
+            "snow_days": snow_days,
+            "snow_day_percentage": snow_pct,
+            "temperature_max_monthly": daily.get("temperature_2m_max"),
+            "temperature_min_monthly": daily.get("temperature_2m_min"),
+            "precipitation_monthly": daily.get("precipitation_sum"),
+            "snowfall_monthly": snowfall,
+        }
+        return str(data)
 
     tools = [reverse_geocode, tavily_tool, get_monthly_weather_stats]
     system_prompt = _build_agent_system_prompt(analysis_json)
