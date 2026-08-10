@@ -1785,6 +1785,24 @@ def _inject_global_app_css():
     st.markdown(
         """
         <style>
+        /* =====================================================================
+           Palette — deep ocean teal + a warm amber accent for emphasis.
+           Used only for general UI chrome (never for the turbidity/chlorophyll
+           scientific colormaps, which are generated separately in Python).
+           ===================================================================== */
+        :root {
+            --wq-navy:        #0A3F4A;
+            --wq-teal-dark:   #0B6E76;
+            --wq-teal:        #0E8E99;
+            --wq-teal-light:  #2FC2CE;
+            --wq-amber:       #F5A524;
+            --wq-amber-dark:  #E08E0B;
+            --wq-bg-1:        #EAF7F9;
+            --wq-bg-2:        #F7FCFD;
+            --wq-card:        #FFFFFF;
+            --wq-border:      #CDEBEF;
+        }
+
         /* ---- Persian font (applied to text-bearing UI elements) ---- */
         html, body, [class*="css"],
         .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span,
@@ -1807,108 +1825,166 @@ def _inject_global_app_css():
 
         /* ---- App background: soft, professional water-inspired gradient ---- */
         .stApp {
-            background: linear-gradient(180deg, #f4f9fb 0%, #eef5f7 100%);
+            background: linear-gradient(160deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FDF7EC 100%);
         }
 
-        /* ---- Headers ---- */
-        h1, h2, h3 {
-            color: #0b5d6b;
-        }
+        /* ---- Main page title ---- */
         h1 {
-            border-bottom: 2px solid #d3ecef;
-            padding-bottom: 0.4rem;
+            color: var(--wq-navy);
+            font-weight: 800;
+            font-size: 2.1rem;
+            background: linear-gradient(90deg, var(--wq-navy) 0%, var(--wq-teal) 60%, var(--wq-teal-light) 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            border-bottom: 3px solid var(--wq-teal-light);
+            padding-bottom: 0.5rem;
+            display: inline-block;
+        }
+
+        /* ---- Big section titles (st.header, e.g. "1️⃣ ...", "2️⃣ ...", "3️⃣ ...") ---- */
+        h2 {
+            color: var(--wq-navy) !important;
+            font-weight: 800;
+            font-size: 1.55rem;
+            background: linear-gradient(90deg, #DFF4F6 0%, #F3FBFC 85%);
+            border-right: 6px solid var(--wq-amber);
+            border-radius: 10px;
+            padding: 0.65rem 1.1rem;
+            margin: 1.6rem 0 1rem 0;
+            box-shadow: 0 2px 8px rgba(10, 63, 74, 0.08);
+        }
+
+        /* ---- Sub-titles (st.subheader / "#### " markdown) ---- */
+        h3 {
+            color: var(--wq-teal-dark);
+            font-weight: 700;
+            border-right: 3px solid var(--wq-teal-light);
+            padding-right: 0.6rem;
         }
 
         /* ---- Sidebar ---- */
         section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #0b5d6b 0%, #0e7c86 100%);
+            background: linear-gradient(180deg, var(--wq-navy) 0%, var(--wq-teal-dark) 100%);
         }
         section[data-testid="stSidebar"] * {
-            color: #eaf6f8 !important;
+            color: #EAF7F9 !important;
         }
         section[data-testid="stSidebar"] .stButton > button {
-            background-color: rgba(255,255,255,0.12);
-            color: #eaf6f8;
+            background: rgba(255,255,255,0.10);
+            color: #EAF7F9;
             border: 1px solid rgba(255,255,255,0.35);
+            box-shadow: none;
         }
         section[data-testid="stSidebar"] .stButton > button:hover {
-            background-color: rgba(255,255,255,0.22);
+            background: rgba(255,255,255,0.22);
+            transform: none;
         }
 
-        /* ---- Buttons ---- */
+        /* ---- Buttons (general) ---- */
         .stButton > button, .stDownloadButton > button {
-            background: linear-gradient(135deg, #0e7c86 0%, #14a3ae 100%);
+            background: linear-gradient(135deg, var(--wq-teal) 0%, var(--wq-teal-light) 100%);
             color: #ffffff;
             border: none;
-            border-radius: 8px;
-            font-weight: 600;
-            transition: all 0.15s ease-in-out;
-            box-shadow: 0 2px 6px rgba(14, 124, 134, 0.25);
+            border-radius: 12px;
+            font-weight: 700;
+            padding: 0.55rem 1.4rem;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+            box-shadow: 0 3px 10px rgba(14, 142, 153, 0.28);
         }
         .stButton > button:hover, .stDownloadButton > button:hover {
-            background: linear-gradient(135deg, #0b5d6b 0%, #0e7c86 100%);
-            box-shadow: 0 4px 10px rgba(14, 124, 134, 0.35);
+            background: linear-gradient(135deg, var(--wq-teal-dark) 0%, var(--wq-teal) 100%);
+            box-shadow: 0 6px 16px rgba(14, 142, 153, 0.38);
+            transform: translateY(-2px);
+        }
+        .stButton > button:active, .stDownloadButton > button:active {
+            transform: translateY(0);
         }
         .stButton > button:disabled {
-            background: #cfd8dc;
-            color: #78909c;
+            background: #D7E1E3;
+            color: #8FA3A8;
             box-shadow: none;
+            transform: none;
+        }
+
+        /* ---- Primary call-to-action button (e.g. "🚀 شروع پایش") ---- */
+        .stButton > button[kind="primary"],
+        .stButton > button[kind="primaryFormSubmit"],
+        [data-testid="baseButton-primary"] {
+            background: linear-gradient(135deg, var(--wq-amber) 0%, var(--wq-amber-dark) 100%) !important;
+            color: #ffffff !important;
+            box-shadow: 0 4px 12px rgba(224, 142, 11, 0.35) !important;
+        }
+        .stButton > button[kind="primary"]:hover,
+        .stButton > button[kind="primaryFormSubmit"]:hover,
+        [data-testid="baseButton-primary"]:hover {
+            background: linear-gradient(135deg, var(--wq-amber-dark) 0%, #C97A08 100%) !important;
+            box-shadow: 0 7px 18px rgba(224, 142, 11, 0.45) !important;
+            transform: translateY(-2px);
         }
 
         /* ---- Text / date / select inputs ---- */
         .stTextInput input, .stNumberInput input, .stDateInput input {
-            border-radius: 8px !important;
-            border: 1px solid #b8dde1 !important;
+            border-radius: 10px !important;
+            border: 1px solid var(--wq-border) !important;
+        }
+        .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {
+            border-color: var(--wq-teal) !important;
+            box-shadow: 0 0 0 2px rgba(14, 142, 153, 0.18) !important;
         }
         .stSelectbox > div > div {
-            border-radius: 8px !important;
-            border-color: #b8dde1 !important;
+            border-radius: 10px !important;
+            border-color: var(--wq-border) !important;
         }
 
         /* ---- Tabs ---- */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 4px;
+            gap: 6px;
         }
         .stTabs [data-baseweb="tab"] {
-            background-color: #e4f2f4;
-            border-radius: 8px 8px 0 0;
-            color: #0b5d6b;
-            font-weight: 600;
+            background-color: #E1F1F3;
+            border-radius: 10px 10px 0 0;
+            color: var(--wq-navy);
+            font-weight: 700;
+            padding: 0.5rem 1rem;
         }
         .stTabs [aria-selected="true"] {
-            background-color: #0e7c86 !important;
+            background: linear-gradient(135deg, var(--wq-teal) 0%, var(--wq-teal-light) 100%) !important;
             color: #ffffff !important;
         }
 
         /* ---- Metrics ---- */
         [data-testid="stMetric"] {
-            background: #ffffff;
-            border: 1px solid #d7ecef;
-            border-radius: 10px;
-            padding: 12px;
-            box-shadow: 0 1px 4px rgba(11, 93, 107, 0.06);
+            background: var(--wq-card);
+            border: 1px solid var(--wq-border);
+            border-top: 3px solid var(--wq-teal-light);
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 2px 8px rgba(10, 63, 74, 0.07);
         }
 
         /* ---- Alerts / info / success / warning boxes ---- */
         .stAlert {
-            border-radius: 10px;
+            border-radius: 12px;
+            box-shadow: 0 1px 6px rgba(10, 63, 74, 0.06);
         }
 
         /* ---- Expanders ---- */
         .streamlit-expanderHeader {
-            font-weight: 600;
-            color: #0b5d6b;
+            font-weight: 700;
+            color: var(--wq-navy);
         }
 
         /* ---- Progress bar ---- */
         .stProgress > div > div > div {
-            background: linear-gradient(90deg, #0e7c86, #14a3ae);
+            background: linear-gradient(90deg, var(--wq-teal) 0%, var(--wq-amber) 100%);
         }
 
         /* ---- Dataframes / tables ---- */
         [data-testid="stDataFrame"] {
-            border-radius: 8px;
+            border-radius: 10px;
             overflow: hidden;
+            border: 1px solid var(--wq-border);
         }
         </style>
         """,
