@@ -1785,6 +1785,12 @@ def _inject_global_app_css():
     st.markdown(
         """
         <style>
+        /* Reliable Persian web font (loads even when "B Nazanin" is not
+           installed locally on the viewer's machine — B Nazanin is still
+           tried first via the font-family stack below, this is just a
+           good-looking, always-available fallback instead of Tahoma). */
+        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap');
+
         /* =====================================================================
            Palette — deep ocean teal + a warm amber accent for emphasis.
            Used only for general UI chrome (never for the turbidity/chlorophyll
@@ -1823,6 +1829,19 @@ def _inject_global_app_css():
             text-align: right;
         }
 
+        /* ---- Larger, easier-to-read body / subsection text ---- */
+        .stMarkdown p, .stMarkdown li {
+            font-size: 1.12rem;
+            line-height: 2;
+        }
+        .stAlert p, .stAlert div {
+            font-size: 1.08rem;
+            line-height: 1.9;
+        }
+        .stCaption, [data-testid="stCaptionContainer"] {
+            font-size: 1rem !important;
+        }
+
         /* ---- App background: soft, professional water-inspired gradient ---- */
         .stApp {
             background: linear-gradient(160deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FDF7EC 100%);
@@ -1846,11 +1865,12 @@ def _inject_global_app_css():
         h2 {
             color: var(--wq-navy) !important;
             font-weight: 800;
-            font-size: 1.55rem;
+            font-size: 1.85rem;
+            line-height: 1.6;
             background: linear-gradient(90deg, #DFF4F6 0%, #F3FBFC 85%);
             border-right: 6px solid var(--wq-amber);
             border-radius: 10px;
-            padding: 0.65rem 1.1rem;
+            padding: 0.7rem 1.1rem;
             margin: 1.6rem 0 1rem 0;
             box-shadow: 0 2px 8px rgba(10, 63, 74, 0.08);
         }
@@ -1859,6 +1879,7 @@ def _inject_global_app_css():
         h3 {
             color: var(--wq-teal-dark);
             font-weight: 700;
+            font-size: 1.3rem;
             border-right: 3px solid var(--wq-teal-light);
             padding-right: 0.6rem;
         }
@@ -1923,10 +1944,21 @@ def _inject_global_app_css():
             transform: translateY(-2px);
         }
 
+        /* ---- Field labels (e.g. "از تاریخ", "تا تاریخ (غیرشامل)", "🎯 انتخاب منطقه") ---- */
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stWidgetLabel"] label,
+        .stDateInput label, .stSelectbox label,
+        .stTextInput label, .stNumberInput label {
+            font-size: 1.15rem !important;
+            font-weight: 700 !important;
+            color: var(--wq-navy) !important;
+        }
+
         /* ---- Text / date / select inputs ---- */
         .stTextInput input, .stNumberInput input, .stDateInput input {
             border-radius: 10px !important;
             border: 1px solid var(--wq-border) !important;
+            font-size: 1.05rem !important;
         }
         .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {
             border-color: var(--wq-teal) !important;
