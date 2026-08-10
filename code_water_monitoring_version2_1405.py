@@ -1609,10 +1609,11 @@ def _get_expert_agent(analysis_json):
         the number of days with snowfall and the snow-day percentage for that
         month. Use this for any request needing exact numeric weather values
         (e.g. 'snow percentage in 2024-01') rather than web search."""
-    try:
-        data = _fetch_monthly_weather_cached(lat, lon, year, month)
-    except Exception as e:
-        return str({"error": f"weather service unavailable or timed out: {e}"})
+        
+        try:
+            data = _fetch_monthly_weather_cached(lat, lon, year, month)
+        except Exception as e:
+            return str({"error": f"weather service unavailable or timed out: {e}"})
        
         last_day = calendar.monthrange(year, month)[1]
         params = {
