@@ -130,6 +130,20 @@ if 'resume_after_interruption' not in st.session_state:
     st.session_state.resume_after_interruption = False
 
 
+@st.cache_data(ttl=None, persist="disk", show_spinner=False)
+def _fetch_monthly_weather_cached(lat: float, lon: float, year: int, month: int) -> dict:
+    last_day = calendar.monthrange(year, month)[1]
+    params = {
+        "latitude": round(lat, 3), "longitude": round(lon, 3),
+        "start_date": f"{year}-{month:02d}-01",
+        "end_date": f"{year}-{month:02d}-{last_day}",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
+        "timezone": "auto",
+    }
+    r = requests.get("https://archive-api.open-meteo.com/v1/archive",
+                      params=params, timeout=(5, 15))  # (connect, read) — fail fast, not at 30s
+    r.raise_for_status()
+
 # =============================================================================
 # Earth Engine Authentication
 # =============================================================================
@@ -1031,19 +1045,19 @@ def display_statistics_summary(results, parameter_type):
 
     if valid_values:
         if parameter_type == PARAM_TURBIDITY:
-            col1.metric(f"📊 میانگین {param_short}", f"{np.mean(valid_values):.4f}")
-            col2.metric(f"⬆️ حداکثر {param_short}", f"{np.max(valid_values):.4f}")
-            col3.metric(f"⬇️ حداقل {param_short}", f"{np.min(valid_values):.4f}")
+            col1.metric(f"میانگین {param_short}", f"{np.mean(valid_values):.4f}")
+            col2.metric(f"حداکثر {param_short}", f"{np.max(valid_values):.4f}")
+            col3.metric(f"حداقل {param_short}", f"{np.min(valid_values):.4f}")
         else:
-            col1.metric(f"📊 میانگین {param_short}", f"{np.mean(valid_values):.2f}")
-            col2.metric(f"⬆️ حداکثر {param_short}", f"{np.max(valid_values):.2f}")
-            col3.metric(f"⬇️ حداقل {param_short}", f"{np.min(valid_values):.2f}")
+            col1.metric(f"میانگین {param_short}", f"{np.mean(valid_values):.2f}")
+            col2.metric(f"حداکثر {param_short}", f"{np.max(valid_values):.2f}")
+            col3.metric(f"حداقل {param_short}", f"{np.min(valid_values):.2f}")
     else:
-        col1.metric(f"📊 میانگین {param_short}", "—")
-        col2.metric(f"⬆️ حداکثر {param_short}", "—")
-        col3.metric(f"⬇️ حداقل {param_short}", "—")
+        col1.metric(f"میانگین {param_short}", "—")
+        col2.metric(f"حداکثر {param_short}", "—")
+        col3.metric(f"حداقل {param_short}", "—")
 
-    col4.metric("💧 میانگین پوشش آب", f"{np.mean(coverage_values):.1f}%")
+    col4.metric("میانگین پوشش آب", f"{np.mean(coverage_values):.1f}%")
 
     with st.expander("📋 جدول داده‌های ماهانه"):
         import pandas as pd
@@ -1054,9 +1068,9 @@ def display_statistics_summary(results, parameter_type):
             value_col = [f"{v:.2f}" if v != 0 else "—" for v in mean_values]
 
         df = pd.DataFrame({
-            '📅 ماه': months,
-            f'📊 میانگین {param_short}': value_col,
-            '💧 پوشش آب (%)': [f"{v:.1f}" for v in coverage_values]
+            'ماه': months,
+            f'میانگین {param_short}': value_col,
+            'پوشش آب (%)': [f"{v:.1f}" for v in coverage_values]
         })
         st.dataframe(df, use_container_width=True)
 
@@ -1588,13 +1602,18 @@ def _get_expert_agent(analysis_json):
         })
 
     @tool
-    def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
-        """Get daily historical weather data (max/min temperature, precipitation,
+def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
+     """Get daily historical weather data (max/min temperature, precipitation,
         snowfall, wind speed) for a given latitude/longitude and a specific
         year/month, using the Open-Meteo historical archive API. Also returns
         the number of days with snowfall and the snow-day percentage for that
         month. Use this for any request needing exact numeric weather values
         (e.g. 'snow percentage in 2024-01') rather than web search."""
+    try:
+        data = _fetch_monthly_weather_cached(lat, lon, year, month)
+    except Exception as e:
+        return str({"error": f"weather service unavailable or timed out: {e}"})
+       
         last_day = calendar.monthrange(year, month)[1]
         params = {
             "latitude": lat,
@@ -1673,42 +1692,14 @@ def _inject_persian_chat_css():
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 21px;
-            line-height: 1.95;
+            font-size: 22px;
+            line-height: 1.9;
         }
-
-        /* Card-style bubble for every chat turn */
-        [data-testid="stChatMessage"] {
-            background: #FFFFFF;
-            border: 1px solid #D6ECEF;
-            border-radius: 18px;
-            padding: 0.7rem 1rem;
-            margin-bottom: 0.75rem;
-            box-shadow: 0 3px 10px rgba(10, 63, 74, 0.07);
-        }
-
-        /* Distinguish the user's turn from the expert's turn by accent color
-           (falls back gracefully to the shared style above in browsers
-           without :has() support — purely a visual touch, no behavior change) */
-        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-            background: linear-gradient(135deg, #EAF7F9 0%, #F7FCFD 100%);
-            border-right: 4px solid #0E8E99;
-        }
-        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
-            background: linear-gradient(135deg, #FFF9EF 0%, #FFFDFA 100%);
-            border-right: 4px solid #F5A524;
-        }
-
         [data-testid="stChatInput"] textarea {
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 19px;
-            border-radius: 14px !important;
-        }
-        [data-testid="stChatInput"] {
-            border-radius: 16px;
-            box-shadow: 0 3px 10px rgba(10, 63, 74, 0.08);
+            font-size: 20px;
         }
         </style>
         """,
@@ -1817,7 +1808,7 @@ def _inject_global_app_css():
            installed locally on the viewer's machine — B Nazanin is still
            tried first via the font-family stack below, this is just a
            good-looking, always-available fallback instead of Tahoma). */
-        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap');
 
         /* =====================================================================
            Palette — deep ocean teal + a warm amber accent for emphasis.
@@ -1826,7 +1817,6 @@ def _inject_global_app_css():
            ===================================================================== */
         :root {
             --wq-navy:        #0A3F4A;
-            --wq-navy-soft:   #123C46;
             --wq-teal-dark:   #0B6E76;
             --wq-teal:        #0E8E99;
             --wq-teal-light:  #2FC2CE;
@@ -1835,12 +1825,7 @@ def _inject_global_app_css():
             --wq-bg-1:        #EAF7F9;
             --wq-bg-2:        #F7FCFD;
             --wq-card:        #FFFFFF;
-            --wq-border:      #D6ECEF;
-            --wq-border-soft: #E9F5F6;
-            --wq-shadow:      rgba(10, 63, 74, 0.10);
-            --wq-shadow-soft: rgba(10, 63, 74, 0.06);
-            --wq-success:     #1E9E6B;
-            --wq-danger:      #D64545;
+            --wq-border:      #CDEBEF;
         }
 
         /* ---- Persian font (applied to text-bearing UI elements) ---- */
@@ -1865,123 +1850,75 @@ def _inject_global_app_css():
 
         /* ---- Larger, easier-to-read body / subsection text ---- */
         .stMarkdown p, .stMarkdown li {
-            font-size: 1.1rem;
+            font-size: 1.12rem;
             line-height: 2;
-            color: #1C3A40;
         }
         .stAlert p, .stAlert div {
-            font-size: 1.05rem;
-            line-height: 1.85;
+            font-size: 1.08rem;
+            line-height: 1.9;
         }
         .stCaption, [data-testid="stCaptionContainer"] {
-            font-size: 0.98rem !important;
-            color: #4C6E74 !important;
-        }
-
-        /* ---- Smooth scroll + refined scrollbar (cosmetic only) ---- */
-        html { scroll-behavior: smooth; }
-        ::-webkit-scrollbar { width: 10px; height: 10px; }
-        ::-webkit-scrollbar-track { background: var(--wq-bg-1); }
-        ::-webkit-scrollbar-thumb {
-            background: linear-gradient(180deg, var(--wq-teal-light), var(--wq-teal));
-            border-radius: 8px;
+            font-size: 1rem !important;
         }
 
         /* ---- App background: soft, professional water-inspired gradient ---- */
         .stApp {
-            background: radial-gradient(1200px 600px at 10% -5%, #DFF6F8 0%, transparent 55%),
-                        radial-gradient(1000px 500px at 100% 0%, #FDF3E1 0%, transparent 45%),
-                        linear-gradient(160deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FDF7EC 100%);
-        }
-
-        .block-container {
-            padding-top: 2.2rem !important;
-            padding-bottom: 3rem !important;
-            max-width: 1180px;
+            background: linear-gradient(160deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FDF7EC 100%);
         }
 
         /* ---- Main page title ---- */
         h1 {
             color: var(--wq-navy);
-            font-weight: 900;
-            font-size: 2.3rem;
-            letter-spacing: 0.2px;
-            background: linear-gradient(90deg, var(--wq-navy) 0%, var(--wq-teal) 55%, var(--wq-teal-light) 100%);
+            font-weight: 800;
+            font-size: 2.1rem;
+            background: linear-gradient(90deg, var(--wq-navy) 0%, var(--wq-teal) 60%, var(--wq-teal-light) 100%);
             -webkit-background-clip: text;
             background-clip: text;
             -webkit-text-fill-color: transparent;
-            padding-bottom: 0.6rem;
-            margin-bottom: 0.3rem;
+            border-bottom: 3px solid var(--wq-teal-light);
+            padding-bottom: 0.5rem;
             display: inline-block;
-        }
-        h1 + div p {
-            font-size: 1.15rem !important;
-            color: var(--wq-teal-dark) !important;
-            padding-bottom: 0.4rem;
-            border-bottom: 2px solid var(--wq-border);
-            margin-bottom: 1rem !important;
         }
 
         /* ---- Big section titles (st.header, e.g. "1️⃣ ...", "2️⃣ ...", "3️⃣ ...") ---- */
         h2 {
             color: var(--wq-navy) !important;
             font-weight: 800;
-            font-size: 1.7rem;
+            font-size: 1.85rem;
             line-height: 1.6;
-            background: linear-gradient(90deg, #DFF4F6 0%, #F6FCFD 90%);
-            border-right: 7px solid var(--wq-amber);
-            border-radius: 12px;
-            padding: 0.85rem 1.3rem;
-            margin: 2.1rem 0 1.2rem 0;
-            box-shadow: 0 3px 12px var(--wq-shadow-soft);
+            background: linear-gradient(90deg, #DFF4F6 0%, #F3FBFC 85%);
+            border-right: 6px solid var(--wq-amber);
+            border-radius: 10px;
+            padding: 0.7rem 1.1rem;
+            margin: 1.6rem 0 1rem 0;
+            box-shadow: 0 2px 8px rgba(10, 63, 74, 0.08);
         }
 
         /* ---- Sub-titles (st.subheader / "#### " markdown) ---- */
         h3 {
             color: var(--wq-teal-dark);
             font-weight: 700;
-            font-size: 1.28rem;
-            border-right: 4px solid var(--wq-teal-light);
-            padding-right: 0.7rem;
-            margin-top: 1.1rem;
-        }
-        h4 {
-            color: var(--wq-navy);
-            font-weight: 700;
-            font-size: 1.12rem;
-            padding-right: 0.3rem;
+            font-size: 1.3rem;
+            border-right: 3px solid var(--wq-teal-light);
+            padding-right: 0.6rem;
         }
 
         /* ---- Sidebar ---- */
         section[data-testid="stSidebar"] {
             background: linear-gradient(180deg, var(--wq-navy) 0%, var(--wq-teal-dark) 100%);
-            box-shadow: 4px 0 18px rgba(10, 63, 74, 0.18);
         }
         section[data-testid="stSidebar"] * {
             color: #EAF7F9 !important;
-        }
-        section[data-testid="stSidebar"] h1,
-        section[data-testid="stSidebar"] h2 {
-            background: none !important;
-            -webkit-text-fill-color: #EAF7F9 !important;
-            border: none !important;
-            box-shadow: none !important;
-        }
-        section[data-testid="stSidebar"] .stAlert {
-            background: rgba(255,255,255,0.08) !important;
-            border: 1px solid rgba(255,255,255,0.22);
         }
         section[data-testid="stSidebar"] .stButton > button {
             background: rgba(255,255,255,0.10);
             color: #EAF7F9;
             border: 1px solid rgba(255,255,255,0.35);
             box-shadow: none;
-            width: 100%;
         }
         section[data-testid="stSidebar"] .stButton > button:hover {
             background: rgba(255,255,255,0.22);
             transform: none;
-            border-color: rgba(255,255,255,0.55);
         }
 
         /* ---- Buttons (general) ---- */
@@ -1991,25 +1928,23 @@ def _inject_global_app_css():
             border: none;
             border-radius: 12px;
             font-weight: 700;
-            font-size: 1.02rem;
-            padding: 0.6rem 1.5rem;
+            padding: 0.55rem 1.4rem;
             transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-            box-shadow: 0 4px 12px rgba(14, 142, 153, 0.28);
+            box-shadow: 0 3px 10px rgba(14, 142, 153, 0.28);
         }
         .stButton > button:hover, .stDownloadButton > button:hover {
             background: linear-gradient(135deg, var(--wq-teal-dark) 0%, var(--wq-teal) 100%);
-            box-shadow: 0 8px 20px rgba(14, 142, 153, 0.38);
+            box-shadow: 0 6px 16px rgba(14, 142, 153, 0.38);
             transform: translateY(-2px);
         }
         .stButton > button:active, .stDownloadButton > button:active {
             transform: translateY(0);
         }
         .stButton > button:disabled {
-            background: #DCE6E8;
-            color: #96A9AE;
+            background: #D7E1E3;
+            color: #8FA3A8;
             box-shadow: none;
             transform: none;
-            opacity: 0.85;
         }
 
         /* ---- Primary call-to-action button (e.g. "🚀 شروع پایش") ---- */
@@ -2018,24 +1953,14 @@ def _inject_global_app_css():
         [data-testid="baseButton-primary"] {
             background: linear-gradient(135deg, var(--wq-amber) 0%, var(--wq-amber-dark) 100%) !important;
             color: #ffffff !important;
-            box-shadow: 0 5px 14px rgba(224, 142, 11, 0.38) !important;
-            font-size: 1.08rem !important;
+            box-shadow: 0 4px 12px rgba(224, 142, 11, 0.35) !important;
         }
         .stButton > button[kind="primary"]:hover,
         .stButton > button[kind="primaryFormSubmit"]:hover,
         [data-testid="baseButton-primary"]:hover {
             background: linear-gradient(135deg, var(--wq-amber-dark) 0%, #C97A08 100%) !important;
-            box-shadow: 0 9px 22px rgba(224, 142, 11, 0.48) !important;
+            box-shadow: 0 7px 18px rgba(224, 142, 11, 0.45) !important;
             transform: translateY(-2px);
-        }
-
-        /* ---- Download button gets its own subtly distinct accent ---- */
-        .stDownloadButton > button {
-            background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal-dark) 100%);
-            box-shadow: 0 4px 12px rgba(10, 63, 74, 0.28);
-        }
-        .stDownloadButton > button:hover {
-            background: linear-gradient(135deg, var(--wq-navy-soft) 0%, var(--wq-teal) 100%);
         }
 
         /* ---- Field labels (e.g. "از تاریخ", "تا تاریخ (غیرشامل)", "🎯 انتخاب منطقه") ---- */
@@ -2043,7 +1968,7 @@ def _inject_global_app_css():
         [data-testid="stWidgetLabel"] label,
         .stDateInput label, .stSelectbox label,
         .stTextInput label, .stNumberInput label {
-            font-size: 1.12rem !important;
+            font-size: 1.15rem !important;
             font-weight: 700 !important;
             color: var(--wq-navy) !important;
         }
@@ -2051,148 +1976,66 @@ def _inject_global_app_css():
         /* ---- Text / date / select inputs ---- */
         .stTextInput input, .stNumberInput input, .stDateInput input {
             border-radius: 10px !important;
-            border: 1.5px solid var(--wq-border) !important;
+            border: 1px solid var(--wq-border) !important;
             font-size: 1.05rem !important;
-            padding: 0.5rem 0.8rem !important;
-            transition: border-color 0.15s ease, box-shadow 0.15s ease;
         }
         .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {
             border-color: var(--wq-teal) !important;
-            box-shadow: 0 0 0 3px rgba(14, 142, 153, 0.16) !important;
+            box-shadow: 0 0 0 2px rgba(14, 142, 153, 0.18) !important;
         }
         .stSelectbox > div > div {
             border-radius: 10px !important;
-            border: 1.5px solid var(--wq-border) !important;
-        }
-        .stDateInput [data-baseweb="input"], .stTextInput [data-baseweb="input"] {
-            border-radius: 10px !important;
+            border-color: var(--wq-border) !important;
         }
 
         /* ---- Tabs ---- */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
-            border-bottom: 2px solid var(--wq-border);
+            gap: 6px;
         }
         .stTabs [data-baseweb="tab"] {
-            background-color: #E4F2F4;
-            border-radius: 12px 12px 0 0;
+            background-color: #E1F1F3;
+            border-radius: 10px 10px 0 0;
             color: var(--wq-navy);
             font-weight: 700;
-            font-size: 1.02rem;
-            padding: 0.65rem 1.3rem;
-            transition: background 0.15s ease, color 0.15s ease;
-        }
-        .stTabs [data-baseweb="tab"]:hover {
-            background-color: #D2ECEF;
+            padding: 0.5rem 1rem;
         }
         .stTabs [aria-selected="true"] {
             background: linear-gradient(135deg, var(--wq-teal) 0%, var(--wq-teal-light) 100%) !important;
             color: #ffffff !important;
-            box-shadow: 0 -3px 10px rgba(14, 142, 153, 0.22);
         }
 
         /* ---- Metrics ---- */
         [data-testid="stMetric"] {
             background: var(--wq-card);
             border: 1px solid var(--wq-border);
-            border-top: 4px solid var(--wq-teal-light);
-            border-radius: 14px;
-            padding: 16px 14px;
-            box-shadow: 0 3px 10px var(--wq-shadow-soft);
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        [data-testid="stMetric"]:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 18px var(--wq-shadow);
-        }
-        [data-testid="stMetricLabel"] {
-            font-weight: 700 !important;
-            color: var(--wq-teal-dark) !important;
-        }
-        [data-testid="stMetricValue"] {
-            font-weight: 800 !important;
-            color: var(--wq-navy) !important;
+            border-top: 3px solid var(--wq-teal-light);
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 2px 8px rgba(10, 63, 74, 0.07);
         }
 
-        /* ---- Alerts / info / success / warning / error boxes ---- */
+        /* ---- Alerts / info / success / warning boxes ---- */
         .stAlert {
-            border-radius: 14px;
-            box-shadow: 0 2px 8px var(--wq-shadow-soft);
-            border: 1px solid var(--wq-border-soft);
-            padding: 0.2rem 0.4rem;
+            border-radius: 12px;
+            box-shadow: 0 1px 6px rgba(10, 63, 74, 0.06);
         }
 
         /* ---- Expanders ---- */
         .streamlit-expanderHeader {
             font-weight: 700;
             color: var(--wq-navy);
-            font-size: 1.05rem;
-            background: #F1FAFB;
-            border-radius: 10px !important;
-        }
-        [data-testid="stExpander"] {
-            border: 1px solid var(--wq-border) !important;
-            border-radius: 12px !important;
-            box-shadow: 0 2px 8px var(--wq-shadow-soft);
-            overflow: hidden;
         }
 
         /* ---- Progress bar ---- */
         .stProgress > div > div > div {
-            background: linear-gradient(90deg, var(--wq-teal) 0%, var(--wq-teal-light) 50%, var(--wq-amber) 100%);
-            border-radius: 8px;
-        }
-        .stProgress > div > div {
-            border-radius: 8px;
-            background: #DCEFF1;
+            background: linear-gradient(90deg, var(--wq-teal) 0%, var(--wq-amber) 100%);
         }
 
         /* ---- Dataframes / tables ---- */
         [data-testid="stDataFrame"] {
-            border-radius: 12px;
+            border-radius: 10px;
             overflow: hidden;
             border: 1px solid var(--wq-border);
-            box-shadow: 0 2px 10px var(--wq-shadow-soft);
-        }
-
-        /* ---- Dividers ---- */
-        hr {
-            border: none;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, var(--wq-teal-light), transparent);
-            margin: 1.6rem 0;
-        }
-
-        /* ---- Images (thumbnails / RGB previews) ---- */
-        [data-testid="stImage"] img {
-            border-radius: 12px;
-            border: 1px solid var(--wq-border);
-            box-shadow: 0 3px 10px var(--wq-shadow-soft);
-        }
-        [data-testid="stImageCaption"] {
-            color: var(--wq-teal-dark) !important;
-            font-weight: 600;
-        }
-
-        /* ---- Map / embedded iframes (folium) ---- */
-        iframe {
-            border-radius: 16px;
-            box-shadow: 0 6px 20px var(--wq-shadow);
-        }
-
-        /* ---- Chat messages (general chat styling shared with the Persian tab) ---- */
-        [data-testid="stChatMessage"] {
-            border-radius: 16px;
-            padding: 0.5rem 0.7rem;
-            box-shadow: 0 2px 8px var(--wq-shadow-soft);
-            border: 1px solid var(--wq-border-soft);
-            margin-bottom: 0.6rem;
-        }
-        [data-testid="stChatInput"] {
-            border-radius: 14px;
-        }
-        [data-testid="stChatInput"] textarea {
-            border-radius: 12px !important;
         }
         </style>
         """,
@@ -2290,8 +2133,8 @@ def main():
         for i, p in enumerate(st.session_state.drawn_polygons):
             c1, c2, c3 = st.columns([3, 1, 1])
             centroid = p.centroid
-            c1.write(f"📐 **منطقه {i+1}**: ~{p.area * 111 * 111:.2f} کیلومتر مربع")
-            c2.write(f"📍 مرکز: ({centroid.y:.4f}, {centroid.x:.4f})")
+            c1.write(f"**منطقه {i+1}**: ~{p.area * 111 * 111:.2f} کیلومتر مربع")
+            c2.write(f"مرکز: ({centroid.y:.4f}, {centroid.x:.4f})")
             if c3.button("🗑️", key=f"del_{i}", disabled=st.session_state.processing_in_progress):
                 st.session_state.drawn_polygons.pop(i)
                 if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
@@ -2303,8 +2146,8 @@ def main():
     # ==========================================================================
     st.header("2️⃣ بازه زمانی")
     c1, c2 = st.columns(2)
-    start = c1.date_input("📅 از تاریخ", value=date(2024, 1, 1), disabled=st.session_state.processing_in_progress)
-    end = c2.date_input("📅 تا تاریخ (غیرشامل)", value=date(2025, 1, 1), disabled=st.session_state.processing_in_progress)
+    start = c1.date_input("از تاریخ", value=date(2024, 1, 1), disabled=st.session_state.processing_in_progress)
+    end = c2.date_input("تا تاریخ (غیرشامل)", value=date(2025, 1, 1), disabled=st.session_state.processing_in_progress)
 
     if start >= end:
         st.error("بازه تاریخ نامعتبر است")
