@@ -48,6 +48,167 @@ from folium import plugins
 from streamlit_folium import st_folium
 
 # =============================================================================
+# Global Presentation Layer — Persian (B Nazanin) font, RTL layout, and a
+# refined, professional color palette for general UI chrome (buttons, inputs,
+# headers, cards, tabs, sidebar, alerts, etc.). This section is purely
+# cosmetic: it does not touch any processing, calculation, data-handling, or
+# application-logic code anywhere else in the file. The scientific color
+# palettes used for the Turbidity (NDTI) and Chlorophyll (NDCI) index maps
+# (create_turbidity_colormap / create_chlorophyll_colormap) are untouched.
+# =============================================================================
+def _inject_global_app_css():
+    """Applies Persian/RTL presentation and a subtle, professional color
+    palette to the general Streamlit UI chrome. Presentation-only — no
+    functional behavior is changed by this styling."""
+    st.markdown(
+        """
+        <style>
+        @import url('https://cdnjs.cloudflare.com/ajax/libs/vazirmatn/33.0.3/Vazirmatn-font-face.css');
+
+        :root {
+            --wq-primary: #0e7c86;      /* deep teal — primary brand color */
+            --wq-primary-dark: #095f68;
+            --wq-primary-light: #14a3af;
+            --wq-accent: #2ca6a4;       /* soft aqua accent */
+            --wq-bg: #f6f9fa;           /* app background */
+            --wq-surface: #ffffff;      /* card / surface background */
+            --wq-border: #dbe7e8;
+            --wq-text: #1f2d30;
+            --wq-text-muted: #5b6b6e;
+        }
+
+        /* ---- Global font + base RTL direction for Persian text ---- */
+        html, body, [class*="css"] {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+        }
+
+        .stApp {
+            direction: rtl;
+            background-color: var(--wq-bg);
+        }
+
+        /* Keep Latin/technical widgets (code blocks, dataframes headers with
+           English labels, number inputs) readable; RTL is applied at the
+           block/container level below rather than forced on every element,
+           so app functionality and existing widget behavior are preserved. */
+        .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span,
+        .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4,
+        .stAlert, .stAlert p, .stAlert div,
+        [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
+        .stTabs [data-baseweb="tab"] {
+            direction: rtl;
+            text-align: right;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+        }
+
+        h1, h2, h3, h4 {
+            color: var(--wq-primary-dark);
+            font-weight: 700;
+        }
+
+        /* ---- Sidebar ---- */
+        section[data-testid="stSidebar"] {
+            background-color: #ffffff;
+            border-left: 1px solid var(--wq-border);
+        }
+
+        /* ---- Buttons ---- */
+        .stButton > button, .stDownloadButton > button {
+            border-radius: 10px;
+            border: 1px solid var(--wq-border);
+            background-color: var(--wq-surface);
+            color: var(--wq-primary-dark);
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-weight: 600;
+            transition: all 0.15s ease-in-out;
+        }
+        .stButton > button:hover, .stDownloadButton > button:hover {
+            border-color: var(--wq-primary);
+            color: var(--wq-primary);
+            box-shadow: 0 2px 6px rgba(14, 124, 134, 0.15);
+        }
+        .stButton > button[kind="primary"] {
+            background-color: var(--wq-primary);
+            border-color: var(--wq-primary);
+            color: #ffffff;
+        }
+        .stButton > button[kind="primary"]:hover {
+            background-color: var(--wq-primary-dark);
+            border-color: var(--wq-primary-dark);
+            color: #ffffff;
+        }
+
+        /* ---- Inputs, selects, date pickers ---- */
+        .stTextInput input, .stNumberInput input, .stDateInput input,
+        .stSelectbox div[data-baseweb="select"] {
+            border-radius: 8px !important;
+        }
+        .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {
+            border-color: var(--wq-primary) !important;
+            box-shadow: 0 0 0 1px var(--wq-primary) !important;
+        }
+
+        /* ---- Tabs ---- */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 6px;
+            border-bottom: 1px solid var(--wq-border);
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #eef4f4;
+            border-radius: 8px 8px 0 0;
+            padding: 8px 16px;
+            color: var(--wq-text-muted);
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: var(--wq-surface);
+            color: var(--wq-primary-dark) !important;
+            font-weight: 700;
+            border-bottom: 2px solid var(--wq-primary);
+        }
+
+        /* ---- Metrics ---- */
+        [data-testid="stMetric"] {
+            background-color: var(--wq-surface);
+            border: 1px solid var(--wq-border);
+            border-radius: 10px;
+            padding: 10px 14px;
+        }
+
+        /* ---- Alerts / info / success / warning / error boxes ---- */
+        .stAlert {
+            border-radius: 10px;
+        }
+
+        /* ---- Expanders ---- */
+        [data-testid="stExpander"] {
+            border: 1px solid var(--wq-border);
+            border-radius: 10px;
+            background-color: var(--wq-surface);
+        }
+
+        /* ---- Progress bar ---- */
+        .stProgress > div > div > div {
+            background-color: var(--wq-primary);
+        }
+
+        /* ---- Dataframes / tables ---- */
+        [data-testid="stDataFrame"] {
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--wq-border);
+        }
+
+        /* ---- Dividers ---- */
+        hr {
+            border-color: var(--wq-border);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =============================================================================
 # CONSTANTS
 # =============================================================================
 # --- Fixed processing thresholds (no longer user-configurable) -------------
@@ -1767,6 +1928,8 @@ def render_expert_chat_tab():
 # Main Application
 # =============================================================================
 def main():
+    _inject_global_app_css()
+
     st.title("🌊 سامانه پایش کیفیت آب")
     st.markdown(
         "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای "
