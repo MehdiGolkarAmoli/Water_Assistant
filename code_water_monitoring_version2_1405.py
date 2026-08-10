@@ -48,167 +48,6 @@ from folium import plugins
 from streamlit_folium import st_folium
 
 # =============================================================================
-# Global Presentation Layer — Persian (B Nazanin) font, RTL layout, and a
-# refined, professional color palette for general UI chrome (buttons, inputs,
-# headers, cards, tabs, sidebar, alerts, etc.). This section is purely
-# cosmetic: it does not touch any processing, calculation, data-handling, or
-# application-logic code anywhere else in the file. The scientific color
-# palettes used for the Turbidity (NDTI) and Chlorophyll (NDCI) index maps
-# (create_turbidity_colormap / create_chlorophyll_colormap) are untouched.
-# =============================================================================
-def _inject_global_app_css():
-    """Applies Persian/RTL presentation and a subtle, professional color
-    palette to the general Streamlit UI chrome. Presentation-only — no
-    functional behavior is changed by this styling."""
-    st.markdown(
-        """
-        <style>
-        @import url('https://cdnjs.cloudflare.com/ajax/libs/vazirmatn/33.0.3/Vazirmatn-font-face.css');
-
-        :root {
-            --wq-primary: #0e7c86;      /* deep teal — primary brand color */
-            --wq-primary-dark: #095f68;
-            --wq-primary-light: #14a3af;
-            --wq-accent: #2ca6a4;       /* soft aqua accent */
-            --wq-bg: #f6f9fa;           /* app background */
-            --wq-surface: #ffffff;      /* card / surface background */
-            --wq-border: #dbe7e8;
-            --wq-text: #1f2d30;
-            --wq-text-muted: #5b6b6e;
-        }
-
-        /* ---- Global font + base RTL direction for Persian text ---- */
-        html, body, [class*="css"] {
-            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-        }
-
-        .stApp {
-            direction: rtl;
-            background-color: var(--wq-bg);
-        }
-
-        /* Keep Latin/technical widgets (code blocks, dataframes headers with
-           English labels, number inputs) readable; RTL is applied at the
-           block/container level below rather than forced on every element,
-           so app functionality and existing widget behavior are preserved. */
-        .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span,
-        .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4,
-        .stAlert, .stAlert p, .stAlert div,
-        [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
-        .stTabs [data-baseweb="tab"] {
-            direction: rtl;
-            text-align: right;
-            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-        }
-
-        h1, h2, h3, h4 {
-            color: var(--wq-primary-dark);
-            font-weight: 700;
-        }
-
-        /* ---- Sidebar ---- */
-        section[data-testid="stSidebar"] {
-            background-color: #ffffff;
-            border-left: 1px solid var(--wq-border);
-        }
-
-        /* ---- Buttons ---- */
-        .stButton > button, .stDownloadButton > button {
-            border-radius: 10px;
-            border: 1px solid var(--wq-border);
-            background-color: var(--wq-surface);
-            color: var(--wq-primary-dark);
-            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-weight: 600;
-            transition: all 0.15s ease-in-out;
-        }
-        .stButton > button:hover, .stDownloadButton > button:hover {
-            border-color: var(--wq-primary);
-            color: var(--wq-primary);
-            box-shadow: 0 2px 6px rgba(14, 124, 134, 0.15);
-        }
-        .stButton > button[kind="primary"] {
-            background-color: var(--wq-primary);
-            border-color: var(--wq-primary);
-            color: #ffffff;
-        }
-        .stButton > button[kind="primary"]:hover {
-            background-color: var(--wq-primary-dark);
-            border-color: var(--wq-primary-dark);
-            color: #ffffff;
-        }
-
-        /* ---- Inputs, selects, date pickers ---- */
-        .stTextInput input, .stNumberInput input, .stDateInput input,
-        .stSelectbox div[data-baseweb="select"] {
-            border-radius: 8px !important;
-        }
-        .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {
-            border-color: var(--wq-primary) !important;
-            box-shadow: 0 0 0 1px var(--wq-primary) !important;
-        }
-
-        /* ---- Tabs ---- */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 6px;
-            border-bottom: 1px solid var(--wq-border);
-        }
-        .stTabs [data-baseweb="tab"] {
-            background-color: #eef4f4;
-            border-radius: 8px 8px 0 0;
-            padding: 8px 16px;
-            color: var(--wq-text-muted);
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: var(--wq-surface);
-            color: var(--wq-primary-dark) !important;
-            font-weight: 700;
-            border-bottom: 2px solid var(--wq-primary);
-        }
-
-        /* ---- Metrics ---- */
-        [data-testid="stMetric"] {
-            background-color: var(--wq-surface);
-            border: 1px solid var(--wq-border);
-            border-radius: 10px;
-            padding: 10px 14px;
-        }
-
-        /* ---- Alerts / info / success / warning / error boxes ---- */
-        .stAlert {
-            border-radius: 10px;
-        }
-
-        /* ---- Expanders ---- */
-        [data-testid="stExpander"] {
-            border: 1px solid var(--wq-border);
-            border-radius: 10px;
-            background-color: var(--wq-surface);
-        }
-
-        /* ---- Progress bar ---- */
-        .stProgress > div > div > div {
-            background-color: var(--wq-primary);
-        }
-
-        /* ---- Dataframes / tables ---- */
-        [data-testid="stDataFrame"] {
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--wq-border);
-        }
-
-        /* ---- Dividers ---- */
-        hr {
-            border-color: var(--wq-border);
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# =============================================================================
 # CONSTANTS
 # =============================================================================
 # --- Fixed processing thresholds (no longer user-configurable) -------------
@@ -1922,6 +1761,159 @@ def render_expert_chat_tab():
                 st.markdown(answer)
 
         st.session_state.expert_chat_history.append({"role": "assistant", "content": answer})
+
+
+# =============================================================================
+# Global App Styling — Persian (B Nazanin) font + RTL text + professional
+# color palette for general UI chrome only (buttons, headers, inputs,
+# sidebar, tabs, metrics, alerts, dataframes, progress bar). This is purely
+# presentational: it does not touch the turbidity/chlorophyll colormaps
+# (create_turbidity_colormap / create_chlorophyll_colormap) or any of the
+# matplotlib figures used to render scientific results, and it does not
+# alter any data-processing, calculation, or workflow logic.
+# =============================================================================
+def _inject_global_app_css():
+    """
+    Applies a light, water-themed color palette plus the Persian "B Nazanin"
+    font (falling back gracefully to Vazirmatn/Tahoma if it is not installed
+    on the viewer's system, since it is not a free web font) and right-to-left
+    text alignment to Streamlit's general UI chrome. Scoped to text/UI
+    elements only — deliberately does not force RTL on the whole document
+    body, so widgets such as the folium map, matplotlib figures, and layout
+    columns keep their normal structure and behaviour.
+    """
+    st.markdown(
+        """
+        <style>
+        /* ---- Persian font (applied to text-bearing UI elements) ---- */
+        html, body, [class*="css"],
+        .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span,
+        .stText, .stCaption, label, .stButton > button, .stDownloadButton > button,
+        .stTextInput input, .stNumberInput input, .stDateInput input,
+        .stSelectbox div, .stTabs, .stAlert, .stAlert p,
+        [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
+        [data-testid="stMetricDelta"], [data-testid="stDataFrame"],
+        .streamlit-expanderHeader, h1, h2, h3, h4, h5, h6 {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+        }
+
+        /* ---- RTL alignment for Persian text blocks (scoped, not global) ---- */
+        .stMarkdown, .stMarkdown p, .stMarkdown li,
+        .stAlert, .stAlert p, .streamlit-expanderHeader,
+        h1, h2, h3, h4, h5, h6, .stCaption, label {
+            direction: rtl;
+            text-align: right;
+        }
+
+        /* ---- App background: soft, professional water-inspired gradient ---- */
+        .stApp {
+            background: linear-gradient(180deg, #f4f9fb 0%, #eef5f7 100%);
+        }
+
+        /* ---- Headers ---- */
+        h1, h2, h3 {
+            color: #0b5d6b;
+        }
+        h1 {
+            border-bottom: 2px solid #d3ecef;
+            padding-bottom: 0.4rem;
+        }
+
+        /* ---- Sidebar ---- */
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0b5d6b 0%, #0e7c86 100%);
+        }
+        section[data-testid="stSidebar"] * {
+            color: #eaf6f8 !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button {
+            background-color: rgba(255,255,255,0.12);
+            color: #eaf6f8;
+            border: 1px solid rgba(255,255,255,0.35);
+        }
+        section[data-testid="stSidebar"] .stButton > button:hover {
+            background-color: rgba(255,255,255,0.22);
+        }
+
+        /* ---- Buttons ---- */
+        .stButton > button, .stDownloadButton > button {
+            background: linear-gradient(135deg, #0e7c86 0%, #14a3ae 100%);
+            color: #ffffff;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.15s ease-in-out;
+            box-shadow: 0 2px 6px rgba(14, 124, 134, 0.25);
+        }
+        .stButton > button:hover, .stDownloadButton > button:hover {
+            background: linear-gradient(135deg, #0b5d6b 0%, #0e7c86 100%);
+            box-shadow: 0 4px 10px rgba(14, 124, 134, 0.35);
+        }
+        .stButton > button:disabled {
+            background: #cfd8dc;
+            color: #78909c;
+            box-shadow: none;
+        }
+
+        /* ---- Text / date / select inputs ---- */
+        .stTextInput input, .stNumberInput input, .stDateInput input {
+            border-radius: 8px !important;
+            border: 1px solid #b8dde1 !important;
+        }
+        .stSelectbox > div > div {
+            border-radius: 8px !important;
+            border-color: #b8dde1 !important;
+        }
+
+        /* ---- Tabs ---- */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 4px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #e4f2f4;
+            border-radius: 8px 8px 0 0;
+            color: #0b5d6b;
+            font-weight: 600;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #0e7c86 !important;
+            color: #ffffff !important;
+        }
+
+        /* ---- Metrics ---- */
+        [data-testid="stMetric"] {
+            background: #ffffff;
+            border: 1px solid #d7ecef;
+            border-radius: 10px;
+            padding: 12px;
+            box-shadow: 0 1px 4px rgba(11, 93, 107, 0.06);
+        }
+
+        /* ---- Alerts / info / success / warning boxes ---- */
+        .stAlert {
+            border-radius: 10px;
+        }
+
+        /* ---- Expanders ---- */
+        .streamlit-expanderHeader {
+            font-weight: 600;
+            color: #0b5d6b;
+        }
+
+        /* ---- Progress bar ---- */
+        .stProgress > div > div > div {
+            background: linear-gradient(90deg, #0e7c86, #14a3ae);
+        }
+
+        /* ---- Dataframes / tables ---- */
+        [data-testid="stDataFrame"] {
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =============================================================================
