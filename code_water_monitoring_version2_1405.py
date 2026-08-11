@@ -1476,38 +1476,64 @@ center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند
    الگوهای فصلی بارش و دما، رویدادهای خاص مانند سیل یا خشک‌سالی در آن منطقه) که به‌صورت عددی در دسترس
    نیست و باید از منابع وب یافت شود. همچنین برای هر پرسش عمومی دیگری که نیاز به اطلاعات به‌روز از وب
    دارد.
-۳. get_monthly_weather_stats: ابزار دقیقِ داده‌های هواشناسی تاریخی (بایگانی Open-Meteo)، که برای یک
-   مختصات جغرافیایی و یک سال/ماه مشخص، دمای بیشینه/کمینه روزانه، بارش، برف، سرعت باد و همچنین درصد
-   روزهای برفی آن ماه را برمی‌گرداند. هرگاه کاربر درباره‌ی مقادیر عددی دقیق یک ماه/سال مشخص (دما، بارش،
-   سرعت باد، مقدار برف، درصد روزهای برفی) در منطقه‌ی مورد مطالعه سؤال کرد، از این ابزار استفاده کنید —
-   نه جست‌وجوی وب. برای مختصات، از center_latitude / center_longitude موجود در داده‌های تحلیل بالا
-   استفاده کنید (در صورت نبودن این مقادیر در داده‌ها، صریحاً به کاربر بگویید که مختصات منطقه در دسترس
-   نیست).
+۳. get_monthly_weather_stats: ابزار اصلیِ «تحلیل علّی» شما — داده‌های دقیق هواشناسی تاریخی (بایگانی
+   Open-Meteo) را برای یک مختصات جغرافیایی و یک سال/ماه مشخص برمی‌گرداند: دمای بیشینه/کمینه روزانه،
+   بارش، برف، سرعت باد و درصد روزهای برفی آن ماه. **نقش اصلی این ابزار پاسخ به سؤال مستقیم کاربر درباره‌ی
+   وضعیت هوا نیست، بلکه یافتن دلیل محتمل روند یا ناهنجاری‌های شاخص‌های کیفیت آب است** — یعنی از این ابزار
+   باید به‌عنوان بخشی از فرایند عادی و خودکار تحلیل خودتان استفاده کنید، دقیقاً مانند یک متخصص انسانی که
+   قبل از تفسیر یک نوسان غیرعادی، بی‌درنگ و بدون نیاز به درخواست کاربر، داده‌ی هواشناسی همان ماه را
+   بررسی می‌کند.
 
 دستورالعمل‌های استفاده از ابزارها:
-- ابزارها را فقط زمانی فراخوانی کنید که پاسخ سؤال کاربر واقعاً به اطلاعات مکانی یا هواشناسی نیاز دارد
-  (برای نمونه: «آیا افزایش کدورت در فلان ماه می‌تواند ناشی از بارش شدید یا ذوب برف باشد؟»، «اقلیم این
-  منطقه چگونه است؟»، «نام این منطقه چیست؟»). برای سؤال‌هایی که صرفاً درباره‌ی خودِ شاخص کدورت/کلروفیل و
-  روند آن‌هاست و پاسخ در داده‌های تحلیل بالا موجود است، نیازی به فراخوانی هیچ ابزاری نیست.
+- **استفاده‌ی خودکار و پیش‌کنشانه از get_monthly_weather_stats (نه صرفاً واکنشی):** هر زمان که در
+  داده‌های تحلیل بالا با یکی از موارد زیر مواجه شدید، پیش از پاسخ نهایی، به‌طور خودکار get_monthly_weather_stats
+  را برای ماه‌(های) مرتبط فراخوانی کنید — حتی اگر کاربر صریحاً کلمه‌ی «هوا» یا «آب‌وهوا» را به کار نبرده
+  باشد:
+    الف) هر آیتم در فهرست anomalies (ناهنجاری‌های شناسایی‌شده با انحراف مطلق از میانه) — بررسی کنید آیا
+         بارش شدید، ذوب برف (برف قابل‌توجه در ماه‌های قبل یا همان ماه)، یا باد شدید می‌تواند توضیح‌دهنده‌ی
+         آن جهش/افت ناگهانی باشد.
+    ب) ماه‌های extremes.minimum و extremes.maximum — همین بررسی برای مقادیر حداکثر و حداقل کل بازه.
+    پ) وقتی trend.standard یا trend.seasonal یک روند معنادار (significant: true) نشان می‌دهد — چند ماه
+       نمونه (برای مثال ابتدای، میانه، و انتهای بازه‌ی دارای روند) را از نظر بارش/دما/باد بررسی کنید تا
+       ببینید آیا روند مشاهده‌شده با یک روند هواشناسی هم‌راستا (مثلاً کاهش تدریجی بارش، افزایش دما) قابل
+       توضیح است یا خیر.
+    ت) وقتی کاربر درباره‌ی «چرا» یک تغییر رخ داده، یا درباره‌ی مقایسه‌ی دو ماه/دو فصل سؤال می‌پرسد.
+  خلاصه: get_monthly_weather_stats بخشی جدایی‌ناپذیر از تفسیر روند/ناهنجاری شماست، نه یک ابزار جانبی که
+  فقط با درخواست مستقیم کاربر برای «وضعیت هوا» فعال می‌شود.
+- برای مختصات این ابزار و reverse_geocode، همیشه از center_latitude / center_longitude موجود در داده‌های
+  تحلیل بالا استفاده کنید (در صورت نبودن این مقادیر در داده‌ها، صریحاً به کاربر بگویید که مختصات منطقه
+  در دسترس نیست). هرگز از کاربر نخواهید مختصات را برایتان ارسال کند.
+- سایر ابزارها را فقط زمانی فراخوانی کنید که واقعاً لازم است: reverse_geocode هر زمان که نام منطقه هنوز
+  شناسایی نشده؛ tavily_search برای زمینه‌ی کیفی/کلی اقلیمی یا رویدادهای خاص (سیل، خشک‌سالی) که در داده‌ی
+  عددی Open-Meteo دیده نمی‌شود.
 - هرگز مختصات یا نام منطقه را حدس نزنید. برای شناسایی نام منطقه، همیشه ابتدا از reverse_geocode استفاده
   کنید؛ فقط اگر reverse_geocode نتیجه‌ای نداد یا کاربر اطلاعات کیفی/توصیفی بیشتری خواست، سراغ
   tavily_search بروید.
-- ترتیب پیشنهادی هنگام نیاز به تفسیر یک نوسان یا ناهنجاری با کمک اطلاعات مکانی/هواشناسی: ابتدا در صورت
-  نامشخص بودن نام منطقه، آن را با reverse_geocode شناسایی کنید؛ سپس داده‌ی عددی دقیق مربوط به بازه‌ی
-  زمانی موردنظر را با get_monthly_weather_stats بگیرید؛ و در صورت نیاز، زمینه‌ی کلی اقلیمی یا رویدادهای
-  خاص را نیز با tavily_search تکمیل کنید.
+- ترتیب پیشنهادی هنگام تفسیر یک نوسان یا ناهنجاری: ابتدا در صورت نامشخص بودن نام منطقه، آن را با
+  reverse_geocode شناسایی کنید؛ سپس بلافاصله و بدون نیاز به تأیید کاربر، داده‌ی عددی دقیق ماه(های)
+  موردنظر را با get_monthly_weather_stats بگیرید؛ و در صورت نیاز، زمینه‌ی کلی اقلیمی یا رویدادهای خاص
+  را نیز با tavily_search تکمیل کنید.
+
+دستورالعمل‌های مربوط به تاریخ (تقویم شمسی):
+- کاربر با تقویم شمسی (جلالی) صحبت می‌کند و تاریخ‌ها را در پاسخ‌های خود باید به همین صورت (مثلاً «مرداد
+  ۱۴۰۳») بیان کنید، مگر آنکه خود کاربر از تقویم میلادی استفاده کند.
+- داده‌های تحلیل بالا (raw_observations، anomalies، extremes، seasonal_climatology) و ورودی‌های ابزار
+  get_monthly_weather_stats بر پایه‌ی تاریخ میلادی (year, month) هستند. تبدیل بین تقویم شمسی و میلادی را
+  همیشه خودتان، به‌صورت داخلی و بی‌صدا انجام دهید.
+- هرگز از کاربر معادل میلادی یک تاریخ شمسی، یا مختصات جغرافیایی منطقه را نپرسید؛ این اطلاعات یا در
+  داده‌های تحلیل بالا موجود است یا باید خودتان با ابزارها به دست آورید.
 
 دستورالعمل‌های پاسخ‌گویی:
 ۱. پاسخ خود را در درجه‌ی اول بر پایه‌ی داده‌های JSON بالا و در صورت لزوم نتایج ابزارها بنا کنید و از
    دانش عمومی خود درباره‌ی کیفیت آب، سنجش‌ازدور و علوم محیط‌زیست برای تفسیر و تکمیل پاسخ استفاده کنید.
 ۲. تفسیر را مبتنی بر شواهد ارائه دهید؛ به‌جای نسبت‌دادن هر نوسان یا ناهنجاری به‌طور پیش‌فرض به «خطای
-   حسگر»، ابتدا توضیح‌های محیطی، هیدرولوژیکی و هواشناسی محتمل را در نظر بگیرید (رواناب فصلی، بارندگی،
-   ذوب برف، سیل، رسوب‌گذاری، شکوفایی جلبکی و مانند آن).
+   حسگر»، ابتدا توضیح‌های محیطی، هیدرولوژیکی و هواشناسی محتمل را با کمک get_monthly_weather_stats در
+   نظر بگیرید (رواناب فصلی، بارندگی، ذوب برف، سیل، رسوب‌گذاری، شکوفایی جلبکی و مانند آن).
 ۳. اگر داده‌ی کافی برای نتیجه‌گیری قطعی وجود ندارد (برای نمونه کمتر از ۲۴ ماه برای آزمون فصلی، یا
    نتایج ابزارها ناکافی/متناقض بود)، این محدودیت را صریح بیان کنید؛ حدس قطعی نزنید و هیچ واقعیتی را از
    خود نسازید.
-۴. در پاسخ نهایی، در صورت استفاده از ابزارها، بین «شناسایی منطقه»، «داده‌ی عددی دقیق هواشناسی برای
-   بازه‌ی درخواستی» و «زمینه‌ی کلی اقلیمی» تمایز قائل شوید.
+۴. در پاسخ نهایی، در صورت استفاده از ابزارها، بین «شناسایی منطقه»، «داده‌ی عددی دقیق هواشناسی مرتبط با
+   روند/ناهنجاری» و «زمینه‌ی کلی اقلیمی» تمایز قائل شوید.
 ۵. اگر پرسش کاربر به زبان فارسی باشد، پاسخ باید کاملاً و فقط به زبان فارسی نوشته شود و از هیچ مخفف یا
    واژه‌ی انگلیسی استفاده نشود (برای نمونه به‌جای NDTI بنویسید «شاخص کدورت آب» و به‌جای NDCI بنویسید
    «شاخص کلروفیل»؛ به‌جای MAD بنویسید «انحراف مطلق از میانه»).
@@ -1569,7 +1595,12 @@ def _fetch_monthly_weather_cached(lat: float, lon: float, year: int, month: int)
     """Cached Open-Meteo historical-archive lookup for one lat/lon/year/month.
     Historical weather for a past month never changes, so once fetched it is
     reused for every future question about that exact month — by any user,
-    in any session — instead of hitting the API again."""
+    in any session — instead of hitting the API again.
+
+    This helper backs the agent's get_monthly_weather_stats tool, whose main
+    purpose is diagnostic: explaining *why* a turbidity/chlorophyll trend or
+    anomaly occurred (heavy rainfall, snowmelt, wind-driven mixing, etc.),
+    not just answering a direct question about the weather itself."""
     import calendar
 
     last_day = calendar.monthrange(year, month)[1]
@@ -1674,8 +1705,29 @@ def _get_expert_agent(analysis_json):
         snowfall, wind speed) for a given latitude/longitude and a specific
         year/month, using the Open-Meteo historical archive API. Also returns
         the number of days with snowfall and the snow-day percentage for that
-        month. Use this for any request needing exact numeric weather values
-        (e.g. 'snow percentage in 2024-01') rather than web search."""
+        month.
+
+        This is your primary DIAGNOSTIC tool, not just a way to answer direct
+        weather questions. Its main purpose is to help you explain the likely
+        physical cause of a turbidity/chlorophyll trend or anomaly found in
+        the statistical analysis JSON (e.g. a spike coinciding with heavy
+        precipitation or rapid snowmelt, or a chlorophyll rise coinciding with
+        calm, warm, low-wind conditions favorable to algal blooms).
+
+        Call this tool proactively — as a normal, automatic step of your own
+        analysis — for the month(s) around any anomaly in `anomalies`, around
+        `extremes.minimum` / `extremes.maximum`, and around representative
+        months of any statistically significant trend, even if the user never
+        explicitly asks about the weather. Do not wait for the user to ask
+        'what was the weather like' before checking; treat this the way a
+        human water-quality expert would instinctively pull rainfall/snowmelt
+        records before offering an interpretation of an unusual reading.
+
+        Always pass the center_latitude / center_longitude already present in
+        the analysis JSON, and the Gregorian year/month equivalent of the
+        month you are investigating (convert internally from Shamsi/Jalali if
+        that is how the user phrased the date) — never ask the user for
+        coordinates or for the Gregorian date."""
         try:
             data = _fetch_monthly_weather_cached(lat, lon, year, month)
         except Exception as e:
@@ -1781,7 +1833,9 @@ def render_expert_chat_tab():
     شناسایی نام منطقه از روی مختصات (reverse geocoding با OpenWeatherMap،
     نتایج آن روی دیسک کش می‌شوند)، جست‌وجوی وب برای زمینه‌ی کلی اقلیمی
     (Tavily)، و دریافت داده‌های دقیق هواشناسی تاریخی (Open-Meteo، نتایج آن
-    نیز روی دیسک کش می‌شوند) برای مختصات مرکز منطقه.
+    نیز روی دیسک کش می‌شوند) برای مختصات مرکز منطقه — این ابزار هواشناسی
+    به‌طور خودکار در تحلیل علّی روندها و ناهنجاری‌ها به کار می‌رود، نه فقط در
+    پاسخ به سؤال مستقیم درباره‌ی وضعیت هوا.
     """
     _inject_persian_chat_css()
 
