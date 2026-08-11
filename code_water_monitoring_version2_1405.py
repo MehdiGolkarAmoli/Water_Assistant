@@ -1058,7 +1058,7 @@ def display_statistics_summary(results, parameter_type):
             f'میانگین {param_short}': value_col,
             'پوشش آب (%)': [f"{v:.1f}" for v in coverage_values]
         })
-        st.dataframe(df, use_container_width=True)
+        _render_persian_dataframe_html(df)
 
 
 def generate_combined_timeseries_excel():
@@ -1152,8 +1152,10 @@ def render_parameter_page(parameter_type):
     4. Statistics Summary
     """
     if parameter_type == PARAM_TURBIDITY:
+        _render_active_section_badge("🌊", "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
         render_turbidity_guidance_panel()
     else:
+        _render_active_section_badge("🌿", "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
         render_chlorophyll_guidance_panel()
 
     st.divider()
@@ -1747,11 +1749,22 @@ def _inject_persian_chat_css():
             font-size: 22px;
             line-height: 1.9;
         }
+        [data-testid="stChatMessage"] {
+            background: #F7FCFD;
+            border: 1px solid #CDEBEF;
+            border-radius: 16px;
+            padding: 1rem 1.2rem;
+            margin-bottom: 0.9rem;
+            box-shadow: 0 2px 10px rgba(10, 63, 74, 0.07);
+        }
         [data-testid="stChatInput"] textarea {
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
             font-size: 20px;
+        }
+        [data-testid="stChatInput"] {
+            border-radius: 16px !important;
         }
         </style>
         """,
@@ -1772,7 +1785,7 @@ def render_expert_chat_tab():
     """
     _inject_persian_chat_css()
 
-    st.header("🧑‍🔬 نظر متخصص آب")
+    _render_active_section_badge("💬", "چت با متخصص آب", "#E08E0B", "#F5A524")
 
     if 'expert_chat_history' not in st.session_state:
         st.session_state.expert_chat_history = []
@@ -1919,6 +1932,31 @@ def _inject_global_app_css():
             background: linear-gradient(160deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FDF7EC 100%);
         }
 
+        /* ---- Centered content column + general vertical rhythm ---- */
+        .block-container {
+            max-width: 1250px;
+            padding-top: 1.6rem;
+            padding-bottom: 3rem;
+            margin: 0 auto;
+        }
+        [data-testid="stElementContainer"] {
+            margin-bottom: 0.3rem;
+        }
+        [data-testid="stHorizontalBlock"] {
+            gap: 1.1rem;
+        }
+        hr {
+            margin: 1.7rem 0 !important;
+            opacity: 0.55;
+        }
+
+        /* ---- Center any embedded iframe widgets (e.g. the folium map) ---- */
+        iframe {
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
         /* ---- Main page title ---- */
         h1 {
             color: var(--wq-navy);
@@ -1950,10 +1988,23 @@ def _inject_global_app_css():
         /* ---- Sub-titles (st.subheader / "#### " markdown) ---- */
         h3 {
             color: var(--wq-teal-dark);
+            font-weight: 800;
+            font-size: 1.45rem;
+            line-height: 1.7;
+            border-right: 4px solid var(--wq-teal-light);
+            padding: 0.35rem 0.9rem;
+            margin: 1.3rem 0 0.7rem 0;
+            background: linear-gradient(90deg, #EFFBFC 0%, transparent 100%);
+            border-radius: 8px;
+        }
+
+        /* ---- Sub-section titles (st.markdown "#### ") ---- */
+        h4 {
+            color: var(--wq-teal-dark);
             font-weight: 700;
-            font-size: 1.3rem;
-            border-right: 3px solid var(--wq-teal-light);
-            padding-right: 0.6rem;
+            font-size: 1.28rem;
+            letter-spacing: 0.2px;
+            margin: 1.1rem 0 0.55rem 0;
         }
 
         /* ---- Sidebar ---- */
@@ -2047,14 +2098,25 @@ def _inject_global_app_css():
         }
         .stTabs [data-baseweb="tab"] {
             background-color: #E1F1F3;
-            border-radius: 10px 10px 0 0;
+            border-radius: 12px 12px 0 0;
             color: var(--wq-navy);
             font-weight: 700;
-            padding: 0.5rem 1rem;
+            padding: 0.75rem 1.4rem;
+        }
+        .stTabs [data-baseweb="tab"] p {
+            font-size: 1.22rem !important;
+            font-weight: 700 !important;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+        }
+        .stTabs [data-baseweb="tab-panel"] {
+            padding-top: 1.3rem;
         }
         .stTabs [aria-selected="true"] {
             background: linear-gradient(135deg, var(--wq-teal) 0%, var(--wq-teal-light) 100%) !important;
             color: #ffffff !important;
+            box-shadow: 0 4px 14px rgba(14, 142, 153, 0.35) !important;
+            border-bottom: 4px solid var(--wq-amber) !important;
+            transform: translateY(-2px);
         }
 
         /* ---- Metrics ---- */
@@ -2090,10 +2152,150 @@ def _inject_global_app_css():
             overflow: hidden;
             border: 1px solid var(--wq-border);
         }
+
+        /* ---- Step headers (workflow sections 1️⃣-4️⃣ replacement) ---- */
+        .wq-step-header {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            direction: rtl;
+            text-align: right;
+            background: linear-gradient(90deg, #DFF4F6 0%, #F3FBFC 85%);
+            border-right: 6px solid var(--wq-amber);
+            border-radius: 14px;
+            padding: 0.95rem 1.4rem;
+            margin: 1.9rem 0 1.2rem 0;
+            box-shadow: 0 3px 12px rgba(10, 63, 74, 0.10);
+        }
+        .wq-step-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 2.2rem;
+            height: 2.2rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal) 100%);
+            color: #ffffff;
+            font-weight: 800;
+            font-size: 1.05rem;
+            flex-shrink: 0;
+        }
+        .wq-step-icon {
+            font-size: 1.75rem;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .wq-step-title {
+            font-size: 1.6rem;
+            font-weight: 800;
+            color: var(--wq-navy);
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+        }
+
+        /* ---- Active-page badge (شown at the top of each result tab) ---- */
+        .wq-page-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            direction: rtl;
+            text-align: right;
+            background: linear-gradient(135deg, var(--wq-badge-start) 0%, var(--wq-badge-end) 100%);
+            color: #ffffff;
+            border-radius: 14px;
+            padding: 0.9rem 1.5rem;
+            margin: 0.2rem 0 1.5rem 0;
+            box-shadow: 0 4px 14px rgba(10, 63, 74, 0.20);
+        }
+        .wq-page-badge-icon {
+            font-size: 1.95rem;
+            line-height: 1;
+        }
+        .wq-page-badge-text {
+            font-size: 1.5rem;
+            font-weight: 800;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+        }
+
+        /* ---- Styled monthly time-series table (replaces st.dataframe) ---- */
+        .wq-table-wrapper {
+            direction: rtl;
+            overflow-x: auto;
+            border-radius: 14px;
+            border: 1px solid var(--wq-border);
+            box-shadow: 0 2px 10px rgba(10, 63, 74, 0.08);
+            margin: 0.5rem 0 0.7rem 0;
+        }
+        .wq-styled-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.1rem;
+        }
+        .wq-styled-table thead th {
+            background: linear-gradient(135deg, var(--wq-teal) 0%, var(--wq-teal-dark) 100%);
+            color: #ffffff;
+            font-weight: 800;
+            padding: 0.8rem 1rem;
+            text-align: center;
+            border: none;
+        }
+        .wq-styled-table tbody td {
+            padding: 0.65rem 1rem;
+            text-align: center;
+            color: var(--wq-navy);
+            border-bottom: 1px solid var(--wq-border);
+        }
+        .wq-styled-table tbody tr:nth-child(even) {
+            background-color: var(--wq-bg-1);
+        }
+        .wq-styled-table tbody tr:hover {
+            background-color: #DDF2F4;
+            transition: background-color 0.15s ease;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_step_header(step_number, icon, title):
+    """Colored, icon-led replacement for the old plain st.header() numbered
+    workflow titles (1️⃣/2️⃣/3️⃣ …). Purely presentational."""
+    st.markdown(
+        f"""
+        <div class="wq-step-header">
+            <div class="wq-step-number">{step_number}</div>
+            <div class="wq-step-icon">{icon}</div>
+            <div class="wq-step-title">{title}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_active_section_badge(icon, title, start_hex, end_hex):
+    """Colored 'you are here' badge shown at the top of each of the three
+    result tabs (Turbidity / Chlorophyll / Expert chat) so the currently
+    active page is always visually obvious. Purely presentational."""
+    st.markdown(
+        f"""
+        <div class="wq-page-badge" style="--wq-badge-start:{start_hex}; --wq-badge-end:{end_hex};">
+            <span class="wq-page-badge-icon">{icon}</span>
+            <span class="wq-page-badge-text">{title}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_persian_dataframe_html(df):
+    """Render a DataFrame as a custom-styled, RTL Persian HTML table. This is
+    a pure presentation swap for st.dataframe: identical columns and values
+    are shown, only the typography/spacing/colors differ (st.dataframe's
+    canvas-based grid cannot be restyled with CSS, which is why a plain HTML
+    table is used here instead)."""
+    html_table = df.to_html(index=False, escape=False, border=0, classes="wq-styled-table")
+    st.markdown(f'<div class="wq-table-wrapper">{html_table}</div>', unsafe_allow_html=True)
 
 
 # =============================================================================
@@ -2142,42 +2344,44 @@ def main():
     # ==========================================================================
     # 1. Region selection
     # ==========================================================================
-    st.header("1️⃣ انتخاب منطقه مورد نظر (بدنه آبی)")
+    _render_step_header(1, "🗺️", "انتخاب منطقه مورد نظر (بدنه آبی)")
 
     if not st.session_state.processing_in_progress:
-        m = folium.Map(location=[35.6892, 51.3890], zoom_start=8)
-        plugins.Draw(export=True, position='topleft', draw_options={
-            'polyline': False, 'rectangle': True, 'polygon': True,
-            'circle': False, 'marker': False, 'circlemarker': False
-        }).add_to(m)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-                        attr='Google', name='Satellite').add_to(m)
-        folium.LayerControl().add_to(m)
+        map_col_l, map_col_c, map_col_r = st.columns([1, 5, 1])
+        with map_col_c:
+            m = folium.Map(location=[35.6892, 51.3890], zoom_start=8)
+            plugins.Draw(export=True, position='topleft', draw_options={
+                'polyline': False, 'rectangle': True, 'polygon': True,
+                'circle': False, 'marker': False, 'circlemarker': False
+            }).add_to(m)
+            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                            attr='Google', name='Satellite').add_to(m)
+            folium.LayerControl().add_to(m)
 
-        map_data = st_folium(m, width=800, height=500)
+            map_data = st_folium(m, width=700, height=500)
 
-        if map_data and map_data.get('last_active_drawing'):
-            geom = map_data['last_active_drawing'].get('geometry', {})
-            if geom.get('type') == 'Polygon':
-                st.session_state.last_drawn_polygon = Polygon(geom['coordinates'][0])
-                st.success("✅ منطقه انتخاب شد")
+            if map_data and map_data.get('last_active_drawing'):
+                geom = map_data['last_active_drawing'].get('geometry', {})
+                if geom.get('type') == 'Polygon':
+                    st.session_state.last_drawn_polygon = Polygon(geom['coordinates'][0])
+                    st.success("✅ منطقه انتخاب شد")
 
-        if st.button("💾 ذخیره منطقه"):
-            if st.session_state.last_drawn_polygon:
-                is_duplicate = False
-                for existing in st.session_state.drawn_polygons:
-                    if existing.equals(st.session_state.last_drawn_polygon):
-                        is_duplicate = True
-                        break
+            if st.button("💾 ذخیره منطقه", use_container_width=True):
+                if st.session_state.last_drawn_polygon:
+                    is_duplicate = False
+                    for existing in st.session_state.drawn_polygons:
+                        if existing.equals(st.session_state.last_drawn_polygon):
+                            is_duplicate = True
+                            break
 
-                if not is_duplicate:
-                    st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
-                    st.success("✅ منطقه ذخیره شد!")
-                    st.rerun()
+                    if not is_duplicate:
+                        st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
+                        st.success("✅ منطقه ذخیره شد!")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ این منطقه قبلاً ذخیره شده است")
                 else:
-                    st.warning("⚠️ این منطقه قبلاً ذخیره شده است")
-            else:
-                st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
+                    st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
     else:
         st.info("🔒 نقشه در حین پردازش قفل است")
 
@@ -2197,7 +2401,7 @@ def main():
     # ==========================================================================
     # 2. Time period
     # ==========================================================================
-    st.header("2️⃣ بازه زمانی")
+    _render_step_header(2, "📅", "بازه زمانی")
     c1, c2 = st.columns(2)
     start = c1.date_input("از تاریخ", value=date(2024, 1, 1), disabled=st.session_state.processing_in_progress)
     end = c2.date_input("تا تاریخ (غیرشامل)", value=date(2025, 1, 1), disabled=st.session_state.processing_in_progress)
@@ -2212,7 +2416,7 @@ def main():
     # ==========================================================================
     # 3. Run analysis — fully automatic (preprocessing + both indices)
     # ==========================================================================
-    st.header("3️⃣ اجرای پایش")
+    _render_step_header(3, "🚀", "اجرای پایش")
 
     selected_polygon = None
 
@@ -2395,7 +2599,7 @@ def main():
     # ==========================================================================
     if st.session_state.processing_complete:
         st.divider()
-        st.header("📊 نتایج پایش")
+        _render_step_header(4, "📊", "نتایج پایش")
 
         # --- Download combined time-series (Turbidity + Chlorophyll) as one .xlsx ---
         if st.session_state.results.get(PARAM_TURBIDITY) or st.session_state.results.get(PARAM_CHLOROPHYLL):
