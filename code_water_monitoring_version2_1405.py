@@ -130,20 +130,6 @@ if 'resume_after_interruption' not in st.session_state:
     st.session_state.resume_after_interruption = False
 
 
-@st.cache_data(ttl=None, persist="disk", show_spinner=False)
-def _fetch_monthly_weather_cached(lat: float, lon: float, year: int, month: int) -> dict:
-    last_day = calendar.monthrange(year, month)[1]
-    params = {
-        "latitude": round(lat, 3), "longitude": round(lon, 3),
-        "start_date": f"{year}-{month:02d}-01",
-        "end_date": f"{year}-{month:02d}-{last_day}",
-        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
-        "timezone": "auto",
-    }
-    r = requests.get("https://archive-api.open-meteo.com/v1/archive",
-                      params=params, timeout=(5, 15))  # (connect, read) — fail fast, not at 30s
-    r.raise_for_status()
-
 # =============================================================================
 # Earth Engine Authentication
 # =============================================================================
@@ -1527,6 +1513,81 @@ center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند
 """
 
 
+# =============================================================================
+# نظر متخصص آب — Cached network helpers (reverse geocoding + historical
+# weather)
+# =============================================================================
+# WHY THIS EXISTS: a monitored waterbody's center coordinates never move, and
+# historical (past-month) weather data never changes once the month is over.
+# Before this fix, both the reverse-geocode and the monthly-weather calls
+# hit their external APIs fresh on every single agent turn — and a single
+# user question can trigger several of these calls in sequence (identify
+# region -> weather for month A -> weather for month B -> ...). Each call
+# also had a generous 30s timeout with no cap on the *total* turn time, so a
+# multi-tool question could run 60-90+ seconds while fully blocking
+# Streamlit's script thread. During that time Streamlit can't send its
+# normal keep-alive traffic, and Posit's reverse proxy (or any proxy in
+# front of it) has its own idle/read timeout — commonly ~60s — and simply
+# drops the connection from the outside once that's exceeded. Nothing raises
+# a Python exception in that case, so the existing try/except in
+# render_expert_chat_tab() never fires either: the user just sees no
+# response at all.
+#
+# THE FIX: cache both lookups to disk with st.cache_data(persist="disk").
+# The first time a region/month is asked about, the API is still called
+# once; every question after that — for that region, for that month, by any
+# user in any session on this deployment — is served instantly from cache
+# with zero network round-trips. This removes almost all of the latency
+# that was tripping the proxy's idle timeout. Per-call timeouts are also
+# tightened from 30s to a (connect=5s, read=15s) tuple so an unresponsive
+# API fails fast instead of silently eating the whole time budget.
+# =============================================================================
+@st.cache_data(ttl=None, persist="disk", show_spinner=False)
+def _reverse_geocode_cached(lat: float, lon: float) -> list:
+    """Cached OpenWeatherMap reverse-geocoding lookup. Coordinates are rounded
+    to ~100m precision so nearby points within the same monitored waterbody
+    reuse the same cache entry instead of each triggering a fresh request."""
+    params = {
+        "lat": round(lat, 3),
+        "lon": round(lon, 3),
+        "limit": 5,
+        "appid": OPENWEATHER_API_KEY,
+    }
+    r = requests.get(
+        "https://api.openweathermap.org/geo/1.0/reverse",
+        params=params,
+        timeout=(5, 15),  # (connect, read) — fail fast instead of hanging up to 30s
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+@st.cache_data(ttl=None, persist="disk", show_spinner=False)
+def _fetch_monthly_weather_cached(lat: float, lon: float, year: int, month: int) -> dict:
+    """Cached Open-Meteo historical-archive lookup for one lat/lon/year/month.
+    Historical weather for a past month never changes, so once fetched it is
+    reused for every future question about that exact month — by any user,
+    in any session — instead of hitting the API again."""
+    import calendar
+
+    last_day = calendar.monthrange(year, month)[1]
+    params = {
+        "latitude": round(lat, 3),
+        "longitude": round(lon, 3),
+        "start_date": f"{year}-{month:02d}-01",
+        "end_date": f"{year}-{month:02d}-{last_day}",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
+        "timezone": "auto",
+    }
+    r = requests.get(
+        "https://archive-api.open-meteo.com/v1/archive",
+        params=params,
+        timeout=(5, 15),  # (connect, read) — fail fast instead of hanging up to 30s
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def _get_expert_agent(analysis_json):
     """
     Build a fresh LangGraph ReAct agent with the three tools: OpenWeatherMap
@@ -1542,10 +1603,14 @@ def _get_expert_agent(analysis_json):
     read directly from this file rather than from a .env file, since the
     Posit server this app runs on cannot read a local .env.
 
+    The reverse_geocode and get_monthly_weather_stats tools below call the
+    disk-cached helpers defined just above this function
+    (_reverse_geocode_cached / _fetch_monthly_weather_cached) instead of
+    hitting their APIs directly — see the comment on those helpers for why.
+
     Requires: langchain, langchain-openai, langgraph, langchain-tavily
     (pip install langchain langchain-openai langgraph langchain-tavily)
     """
-    import calendar
     from langchain.chat_models import init_chat_model
     from langchain_core.tools import tool
     from langchain_tavily import TavilySearch
@@ -1561,6 +1626,8 @@ def _get_expert_agent(analysis_json):
         base_url=OPENAI_BASE_URL,
         api_key=OPENAI_API_KEY,
         temperature=0.3,
+        timeout=45,      # hard per-call cap on the LLM request itself
+        max_retries=1,   # avoid a silent retry doubling the wait on a slow endpoint
     )
 
     tavily_tool = TavilySearch(max_results=5, topic="general")
@@ -1574,15 +1641,13 @@ def _get_expert_agent(analysis_json):
         (e.g. the center_latitude / center_longitude of the monitored water
         body) — it is faster and more precise than a general web search for
         this specific purpose."""
-        params = {
-            "lat": lat,
-            "lon": lon,
-            "limit": 5,
-            "appid": OPENWEATHER_API_KEY,
-        }
-        r = requests.get("https://api.openweathermap.org/geo/1.0/reverse", params=params, timeout=30)
-        r.raise_for_status()
-        results = r.json()
+        try:
+            results = _reverse_geocode_cached(lat, lon)
+        except Exception as e:
+            return str({
+                "lat": lat, "lon": lon, "results": [],
+                "error": f"geocoding service unavailable or timed out: {e}",
+            })
 
         if not results:
             return str({"lat": lat, "lon": lon, "results": [], "note": "No place name found for these coordinates."})
@@ -1603,30 +1668,16 @@ def _get_expert_agent(analysis_json):
 
     @tool
     def get_monthly_weather_stats(lat: float, lon: float, year: int, month: int) -> str:
-     """Get daily historical weather data (max/min temperature, precipitation,
+        """Get daily historical weather data (max/min temperature, precipitation,
         snowfall, wind speed) for a given latitude/longitude and a specific
         year/month, using the Open-Meteo historical archive API. Also returns
         the number of days with snowfall and the snow-day percentage for that
         month. Use this for any request needing exact numeric weather values
         (e.g. 'snow percentage in 2024-01') rather than web search."""
-        
         try:
             data = _fetch_monthly_weather_cached(lat, lon, year, month)
         except Exception as e:
             return str({"error": f"weather service unavailable or timed out: {e}"})
-       
-        last_day = calendar.monthrange(year, month)[1]
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "start_date": f"{year}-{month:02d}-01",
-            "end_date": f"{year}-{month:02d}-{last_day}",
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,wind_speed_10m_max",
-            "timezone": "auto",
-        }
-        r = requests.get("https://archive-api.open-meteo.com/v1/archive", params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
 
         daily = data.get("daily", {})
         snowfall = daily.get("snowfall_sum", [])
@@ -1714,9 +1765,10 @@ def render_expert_chat_tab():
     تحلیل آماری موجود را روی آن اجرا می‌کند، خلاصه JSON تولید می‌کند، و یک
     رابط گفتگو با یک عامل هوشمند (LangGraph ReAct agent) در اختیار کاربر
     قرار می‌دهد. این عامل علاوه بر خلاصه JSON، به سه ابزار نیز دسترسی دارد:
-    شناسایی نام منطقه از روی مختصات (reverse geocoding با OpenWeatherMap)،
-    جست‌وجوی وب برای زمینه‌ی کلی اقلیمی (Tavily)، و دریافت داده‌های دقیق
-    هواشناسی تاریخی (Open-Meteo) برای مختصات مرکز منطقه.
+    شناسایی نام منطقه از روی مختصات (reverse geocoding با OpenWeatherMap،
+    نتایج آن روی دیسک کش می‌شوند)، جست‌وجوی وب برای زمینه‌ی کلی اقلیمی
+    (Tavily)، و دریافت داده‌های دقیق هواشناسی تاریخی (Open-Meteo، نتایج آن
+    نیز روی دیسک کش می‌شوند) برای مختصات مرکز منطقه.
     """
     _inject_persian_chat_css()
 
