@@ -1147,15 +1147,15 @@ def render_parameter_page(parameter_type):
     """
     Full page for one parameter, in the required order:
     1. Legend + Management Guidance Panel
-    2. Statistics Summary
-    3. Side-by-side imagery
-    4. Time-series chart
+    2. Side-by-side imagery
+    3. Time-series chart
+    4. Statistics Summary
     """
     if parameter_type == PARAM_TURBIDITY:
-        _render_active_section_badge(_icon_turbidity(), "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
+        _render_active_section_badge("🌊", "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
         render_turbidity_guidance_panel()
     else:
-        _render_active_section_badge(_icon_chlorophyll(), "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
+        _render_active_section_badge("🌿", "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
         render_chlorophyll_guidance_panel()
 
     st.divider()
@@ -1166,15 +1166,14 @@ def render_parameter_page(parameter_type):
         st.info("برای مشاهده نتایج، ابتدا یک منطقه را انتخاب و پایش را اجرا کنید.")
         return
 
-    display_statistics_summary(results, parameter_type)
-
-    st.divider()
-
     st.markdown("#### 🖼️ تصاویر پردازش‌شده")
     display_side_by_side_imagery(results, parameter_type)
 
     st.divider()
     display_time_series_chart(results, parameter_type)
+
+    st.divider()
+    display_statistics_summary(results, parameter_type)
 
 
 # =============================================================================
@@ -1799,7 +1798,7 @@ def _inject_persian_chat_css():
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 23px;
+            font-size: 22px;
             line-height: 1.9;
         }
         [data-testid="stChatMessage"] {
@@ -1814,7 +1813,7 @@ def _inject_persian_chat_css():
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 21px;
+            font-size: 20px;
         }
         [data-testid="stChatInput"] {
             border-radius: 16px !important;
@@ -1840,7 +1839,7 @@ def render_expert_chat_tab():
     """
     _inject_persian_chat_css()
 
-    _render_active_section_badge(_icon_expert_chat(), "چت با متخصص آب", "#E08E0B", "#F5A524")
+    _render_active_section_badge("💬", "چت با متخصص آب", "#E08E0B", "#F5A524")
 
     if 'expert_chat_history' not in st.session_state:
         st.session_state.expert_chat_history = []
@@ -1904,50 +1903,6 @@ def render_expert_chat_tab():
 
 
 # =============================================================================
-# Custom SVG icons — used instead of generic emoji for the parameter/section
-# badges, so the iconography is purpose-drawn for water quality (droplet +
-# turbidity ripples, droplet + leaf for chlorophyll, droplet + chat bubble
-# for the expert) and always renders crisply in the badge's own accent color.
-# =============================================================================
-def _icon_turbidity():
-    """Droplet with sediment ripples — represents water turbidity (NDTI)."""
-    return """
-    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 2.3C12 2.3 5.4 11 5.4 15.3a6.6 6.6 0 0 0 13.2 0C18.6 11 12 2.3 12 2.3z"
-              fill="#ffffff" fill-opacity="0.24" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
-        <path d="M7.6 12.6c1.1.9 2.2.9 3.3 0s2.2-.9 3.3 0 2.2.9 3.3 0"
-              stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
-        <path d="M7.6 15.9c1.1.9 2.2.9 3.3 0s2.2-.9 3.3 0 2.2.9 3.3 0"
-              stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """
-
-
-def _icon_chlorophyll():
-    """Droplet with a leaf — represents chlorophyll / algal concentration."""
-    return """
-    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 2.3C12 2.3 5.4 11 5.4 15.3a6.6 6.6 0 0 0 13.2 0C18.6 11 12 2.3 12 2.3z"
-              fill="#ffffff" fill-opacity="0.24" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
-        <path d="M12 17.4c-2.1 0-3.7-1.6-3.9-3.9 2.3.1 3.9 1.2 3.9 3.9zm0 0c0-2.7 1.6-3.8 3.9-3.9-.2 2.3-1.8 3.9-3.9 3.9z"
-              fill="#ffffff"/>
-        <path d="M12 12.4v5.6" stroke="#ffffff" stroke-width="1.1" stroke-linecap="round" opacity="0.85"/>
-    </svg>
-    """
-
-
-def _icon_expert_chat():
-    """Speech bubble with a droplet — represents the AI water-quality expert."""
-    return """
-    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M4.2 5.6h15.6c.7 0 1.2.6 1.2 1.3v8.4c0 .7-.5 1.3-1.2 1.3H9.4l-4 3v-3H4.2c-.7 0-1.2-.6-1.2-1.3V6.9c0-.7.5-1.3 1.2-1.3z"
-              fill="#ffffff" fill-opacity="0.22" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
-        <path d="M12 8.1s-2.7 3.1-2.7 4.9a2.7 2.7 0 0 0 5.4 0c0-1.8-2.7-4.9-2.7-4.9z" fill="#ffffff"/>
-    </svg>
-    """
-
-
-# =============================================================================
 # Global App Styling — Persian (B Nazanin) font + RTL text + professional
 # color palette for general UI chrome only (buttons, headers, inputs,
 # sidebar, tabs, metrics, alerts, dataframes, progress bar). This is purely
@@ -2001,8 +1956,6 @@ def _inject_global_app_css():
         .stSelectbox div, .stTabs, .stAlert, .stAlert p,
         [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
         [data-testid="stMetricDelta"], [data-testid="stDataFrame"],
-        [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
-        [data-testid="stWidgetLabel"] div, [data-testid="stDateInputField"],
         .streamlit-expanderHeader, h1, h2, h3, h4, h5, h6 {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
         }
@@ -2017,15 +1970,15 @@ def _inject_global_app_css():
 
         /* ---- Larger, easier-to-read body / subsection text ---- */
         .stMarkdown p, .stMarkdown li {
-            font-size: 1.2rem;
+            font-size: 1.12rem;
             line-height: 2;
         }
         .stAlert p, .stAlert div {
-            font-size: 1.15rem;
+            font-size: 1.08rem;
             line-height: 1.9;
         }
         .stCaption, [data-testid="stCaptionContainer"] {
-            font-size: 1.07rem !important;
+            font-size: 1rem !important;
         }
 
         /* ---- App background: soft, professional water-inspired gradient ---- */
@@ -2062,7 +2015,8 @@ def _inject_global_app_css():
         h1 {
             color: var(--wq-navy);
             font-weight: 800;
-            font-size: 2.15rem;
+            font-size: 2.1rem;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
             background: linear-gradient(90deg, var(--wq-navy) 0%, var(--wq-teal) 60%, var(--wq-teal-light) 100%);
             -webkit-background-clip: text;
             background-clip: text;
@@ -2076,7 +2030,7 @@ def _inject_global_app_css():
         h2 {
             color: var(--wq-navy) !important;
             font-weight: 800;
-            font-size: 1.92rem;
+            font-size: 1.85rem;
             line-height: 1.6;
             background: linear-gradient(90deg, #DFF4F6 0%, #F3FBFC 85%);
             border-right: 6px solid var(--wq-amber);
@@ -2090,7 +2044,7 @@ def _inject_global_app_css():
         h3 {
             color: var(--wq-teal-dark);
             font-weight: 800;
-            font-size: 1.52rem;
+            font-size: 1.45rem;
             line-height: 1.7;
             border-right: 4px solid var(--wq-teal-light);
             padding: 0.35rem 0.9rem;
@@ -2103,7 +2057,7 @@ def _inject_global_app_css():
         h4 {
             color: var(--wq-teal-dark);
             font-weight: 700;
-            font-size: 1.35rem;
+            font-size: 1.28rem;
             letter-spacing: 0.2px;
             margin: 1.1rem 0 0.55rem 0;
         }
@@ -2133,7 +2087,6 @@ def _inject_global_app_css():
             border: none;
             border-radius: 12px;
             font-weight: 700;
-            font-size: 1.08rem;
             padding: 0.55rem 1.4rem;
             transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
             box-shadow: 0 3px 10px rgba(14, 142, 153, 0.28);
@@ -2169,36 +2122,21 @@ def _inject_global_app_css():
             transform: translateY(-2px);
         }
 
-        /* ---- Field labels (e.g. "از تاریخ", "تا تاریخ (غیرشامل)", "🎯 انتخاب منطقه") ----
-           Targets Streamlit's actual label wrapper (a <p> inside
-           [data-testid="stWidgetLabel"]) directly and with !important, since
-           these widget labels do not always inherit the base font-family
-           cleanly from body/html — this is what was making the date-input
-           labels render in the browser's default font instead of BNazanin. */
-        [data-testid="stWidgetLabel"],
+        /* ---- Field labels (e.g. "از تاریخ", "تا تاریخ (غیرشامل)", "🎯 انتخاب منطقه") ---- */
         [data-testid="stWidgetLabel"] p,
         [data-testid="stWidgetLabel"] label,
-        [data-testid="stWidgetLabel"] div,
         .stDateInput label, .stSelectbox label,
         .stTextInput label, .stNumberInput label {
-            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.22rem !important;
+            font-size: 1.15rem !important;
             font-weight: 700 !important;
             color: var(--wq-navy) !important;
-            direction: rtl;
-        }
-
-        /* ---- Date input value text itself (the picked date shown in the box) ---- */
-        .stDateInput input, [data-testid="stDateInputField"] input {
-            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.08rem !important;
         }
 
         /* ---- Text / date / select inputs ---- */
         .stTextInput input, .stNumberInput input, .stDateInput input {
             border-radius: 10px !important;
             border: 1px solid var(--wq-border) !important;
-            font-size: 1.08rem !important;
+            font-size: 1.05rem !important;
         }
         .stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {
             border-color: var(--wq-teal) !important;
@@ -2207,7 +2145,6 @@ def _inject_global_app_css():
         .stSelectbox > div > div {
             border-radius: 10px !important;
             border-color: var(--wq-border) !important;
-            font-size: 1.08rem !important;
         }
 
         /* ---- Tabs ---- */
@@ -2222,7 +2159,7 @@ def _inject_global_app_css():
             padding: 0.75rem 1.4rem;
         }
         .stTabs [data-baseweb="tab"] p {
-            font-size: 1.28rem !important;
+            font-size: 1.22rem !important;
             font-weight: 700 !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
         }
@@ -2246,11 +2183,17 @@ def _inject_global_app_css():
             padding: 14px;
             box-shadow: 0 2px 8px rgba(10, 63, 74, 0.07);
         }
-        [data-testid="stMetricLabel"] {
-            font-size: 1.05rem !important;
-        }
+
+        /* ---- خلاصه آماری metric numbers (میانگین/حداکثر/حداقل ...) — larger, Bnazanin ---- */
         [data-testid="stMetricValue"] {
-            font-size: 1.55rem !important;
+            font-size: 2.1rem !important;
+            font-weight: 800 !important;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+        }
+        [data-testid="stMetricLabel"] p {
+            font-size: 1.35rem !important;
+            font-weight: 700 !important;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
         }
 
         /* ---- Alerts / info / success / warning boxes ---- */
@@ -2262,7 +2205,6 @@ def _inject_global_app_css():
         /* ---- Expanders ---- */
         .streamlit-expanderHeader {
             font-weight: 700;
-            font-size: 1.12rem;
             color: var(--wq-navy);
         }
 
@@ -2302,16 +2244,16 @@ def _inject_global_app_css():
             background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal) 100%);
             color: #ffffff;
             font-weight: 800;
-            font-size: 1.1rem;
+            font-size: 1.05rem;
             flex-shrink: 0;
         }
         .wq-step-icon {
-            font-size: 1.8rem;
+            font-size: 1.75rem;
             line-height: 1;
             flex-shrink: 0;
         }
         .wq-step-title {
-            font-size: 1.68rem;
+            font-size: 1.6rem;
             font-weight: 800;
             color: var(--wq-navy);
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
@@ -2321,7 +2263,7 @@ def _inject_global_app_css():
         .wq-page-badge {
             display: flex;
             align-items: center;
-            gap: 0.85rem;
+            gap: 0.65rem;
             direction: rtl;
             text-align: right;
             background: linear-gradient(135deg, var(--wq-badge-start) 0%, var(--wq-badge-end) 100%);
@@ -2331,23 +2273,12 @@ def _inject_global_app_css():
             margin: 0.2rem 0 1.5rem 0;
             box-shadow: 0 4px 14px rgba(10, 63, 74, 0.20);
         }
-        .wq-page-badge-icon-wrap {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 3.1rem;
-            height: 3.1rem;
-            border-radius: 50%;
-            background: rgba(255, 255, 255, 0.18);
-            box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.4);
-            flex-shrink: 0;
-        }
-        .wq-page-badge-icon-wrap svg {
-            width: 1.9rem;
-            height: 1.9rem;
+        .wq-page-badge-icon {
+            font-size: 1.95rem;
+            line-height: 1;
         }
         .wq-page-badge-text {
-            font-size: 1.58rem;
+            font-size: 1.5rem;
             font-weight: 800;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
         }
@@ -2365,7 +2296,7 @@ def _inject_global_app_css():
             width: 100%;
             border-collapse: collapse;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 1.16rem;
+            font-size: 1.1rem;
         }
         .wq-styled-table thead th {
             background: linear-gradient(135deg, var(--wq-teal) 0%, var(--wq-teal-dark) 100%);
@@ -2412,14 +2343,11 @@ def _render_step_header(step_number, icon, title):
 def _render_active_section_badge(icon, title, start_hex, end_hex):
     """Colored 'you are here' badge shown at the top of each of the three
     result tabs (Turbidity / Chlorophyll / Expert chat) so the currently
-    active page is always visually obvious. `icon` is raw SVG markup (see
-    _icon_turbidity / _icon_chlorophyll / _icon_expert_chat) rendered inside
-    a soft circular chip that matches the badge's own gradient. Purely
-    presentational."""
+    active page is always visually obvious. Purely presentational."""
     st.markdown(
         f"""
         <div class="wq-page-badge" style="--wq-badge-start:{start_hex}; --wq-badge-end:{end_hex};">
-            <span class="wq-page-badge-icon-wrap">{icon}</span>
+            <span class="wq-page-badge-icon">{icon}</span>
             <span class="wq-page-badge-text">{title}</span>
         </div>
         """,
@@ -2438,12 +2366,33 @@ def _render_persian_dataframe_html(df):
 
 
 # =============================================================================
+# App logo (replaces the 🌊 wave emoji at the top of the UI)
+# =============================================================================
+@st.cache_data(show_spinner=False)
+def _get_app_logo_base64():
+    """Load the uploaded llama-style app icon (assets/app_logo.png, next to
+    this script) and return it as a base64 string for inline embedding next
+    to the page title. Cached so the file is only read from disk once."""
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "app_logo.png")
+    with open(logo_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
+# =============================================================================
 # Main Application
 # =============================================================================
 def main():
     _inject_global_app_css()
 
-    st.title("🌊 سامانه پایش کیفیت آب")
+    st.markdown(
+        f'''
+        <div style="display:flex; align-items:center; gap:0.7rem; direction:rtl;">
+            <img src="data:image/png;base64,{_get_app_logo_base64()}" style="height:2.4rem; width:auto; border-radius:8px;">
+            <h1 style="margin:0;">سامانه پایش کیفیت آب</h1>
+        </div>
+        ''',
+        unsafe_allow_html=True
+    )
     st.markdown(
         "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای "
     )
