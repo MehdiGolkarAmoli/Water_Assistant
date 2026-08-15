@@ -2370,12 +2370,27 @@ def _render_persian_dataframe_html(df):
 # =============================================================================
 @st.cache_data(show_spinner=False)
 def _get_app_logo_base64():
-    """Load the uploaded llama-style app icon (assets/app_logo.png, next to
-    this script) and return it as a base64 string for inline embedding next
-    to the page title. Cached so the file is only read from disk once."""
-    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "app_logo.png")
-    with open(logo_path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+    """Load the app icon from Google Drive and return it as a base64 string
+    for inline embedding next to the page title.
+
+    The local assets/app_logo.png file is not present on this deployment
+    (Posit Cloud), so the logo is fetched from Google Drive instead using
+    the file's shareable ID. The Drive file must be shared as "Anyone with
+    the link -> Viewer" for this request to succeed.
+
+    Cached so the file is only downloaded once per session. On any failure
+    (network issue, permissions, bad ID) this returns an empty string
+    instead of raising, so a missing/unreachable logo never crashes the app
+    — the <img> tag will just render nothing instead.
+    """
+    GOOGLE_DRIVE_LOGO_FILE_ID = "1sX8iMkqYvYDJ-XocOa8Hmr0e6-4R-n6i"
+    url = f"https://drive.google.com/thumbnail?id={GOOGLE_DRIVE_LOGO_FILE_ID}&sz=w1000"
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        return base64.b64encode(response.content).decode()
+    except Exception:
+        return ""
 
 
 # =============================================================================
