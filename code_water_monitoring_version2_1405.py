@@ -2170,6 +2170,8 @@ def _inject_global_app_css():
         /* ---- Tabs ---- */
         .stTabs [data-baseweb="tab-list"] {
             gap: 10px;
+            width: 100%;
+            display: flex;
         }
         .stTabs [data-baseweb="tab"] {
             background-color: #E1F1F3;
@@ -2181,6 +2183,7 @@ def _inject_global_app_css():
             display: flex;
             align-items: center;
             justify-content: center;
+            flex: 1 1 0;
         }
         .stTabs [data-baseweb="tab"] p {
             font-size: 1.65rem !important;
