@@ -959,7 +959,12 @@ def display_time_series_chart(results, parameter_type):
     if not results:
         return
 
-    param_short = "NDTI" if parameter_type == PARAM_TURBIDITY else "Chl-a"
+    # Persian font stack for chart text — mirrors the CSS fallback chain used
+    # elsewhere in the app (B Nazanin first, falling back gracefully if it is
+    # not installed on the machine rendering the figure).
+    PERSIAN_FONT = ['B Nazanin', 'BNazanin', 'Vazirmatn', 'Tahoma', 'DejaVu Sans']
+
+    param_label_fa = "شاخص کدورت آب (NDTI)" if parameter_type == PARAM_TURBIDITY else "شاخص کلروفیل (NDCI)"
     param_unit = "" if parameter_type == PARAM_TURBIDITY else " (µg/L)"
     chart_title = "روند زمانی کدورت آب" if parameter_type == PARAM_TURBIDITY else "روند زمانی کلروفیل"
 
@@ -980,33 +985,44 @@ def display_time_series_chart(results, parameter_type):
     fig, ax1 = plt.subplots(figsize=(12, 5))
 
     color1 = '#1f77b4' if parameter_type == PARAM_TURBIDITY else '#228B22'
-    ax1.set_xlabel('Month')
-    ax1.set_ylabel(f'Mean {param_short}{param_unit}', color=color1)
+    ax1.set_xlabel('ماه', fontsize=13, fontfamily=PERSIAN_FONT)
+    ax1.set_ylabel(f'میانگین {param_label_fa}{param_unit}', color=color1, fontsize=13, fontfamily=PERSIAN_FONT)
 
     if valid_values:
-        ax1.plot(months, mean_values, 'o-', color=color1, linewidth=2, markersize=8, label=f'Mean {param_short}')
+        ax1.plot(months, mean_values, 'o-', color=color1, linewidth=2, markersize=8,
+                  label=f'میانگین {param_label_fa}')
         ax1.tick_params(axis='y', labelcolor=color1)
 
         if parameter_type == PARAM_TURBIDITY:
             ax1.set_ylim(min(mean_values) - 0.02, max(mean_values) + 0.02)
-            ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5, label='Neutral (NDTI=0)')
+            ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5, label='خط خنثی (کدورت = ۰)')
         else:
-            ax1.set_ylim(0, max(mean_values) * 1.2)
+            # FIX: NDCI (like NDTI) is a normalized-difference index and can be
+            # negative — forcing the axis to start at 0 (the old behaviour)
+            # clips or completely hides months with a negative mean value.
+            # Scale to the actual min/max instead, the same way the turbidity
+            # chart already does.
+            val_min = min(mean_values)
+            val_max = max(mean_values)
+            padding = max((val_max - val_min) * 0.15, 0.02)
+            ax1.set_ylim(val_min - padding, val_max + padding)
+            ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.4, label='خط خنثی (کلروفیل = ۰)')
     else:
-        ax1.text(0.5, 0.5, 'No valid data', ha='center', va='center', transform=ax1.transAxes, fontsize=12)
+        ax1.text(0.5, 0.5, 'داده معتبری موجود نیست', ha='center', va='center',
+                  transform=ax1.transAxes, fontsize=12, fontfamily=PERSIAN_FONT)
 
     ax1.set_xticklabels(months, rotation=45, ha='right')
     ax1.grid(True, alpha=0.3)
 
     ax1_twin = ax1.twinx()
     color2 = '#2ca02c'
-    ax1_twin.set_ylabel('Water Coverage (%)', color=color2)
-    ax1_twin.bar(months, coverage_values, alpha=0.3, color=color2, label='Water Coverage')
+    ax1_twin.set_ylabel('پوشش آب (٪)', color=color2, fontsize=13, fontfamily=PERSIAN_FONT)
+    ax1_twin.bar(months, coverage_values, alpha=0.3, color=color2, label='پوشش آب')
     ax1_twin.tick_params(axis='y', labelcolor=color2)
     ax1_twin.set_ylim(0, max(coverage_values) * 1.3 if max(coverage_values) > 0 else 100)
 
-    ax1.set_title(chart_title, fontsize=14, fontweight='bold')
-    ax1.legend(loc='upper left')
+    ax1.set_title(chart_title, fontsize=15, fontweight='bold', fontfamily=PERSIAN_FONT)
+    legend = ax1.legend(loc='upper left', prop={'family': PERSIAN_FONT, 'size': 10})
 
     plt.tight_layout()
     st.pyplot(fig)
@@ -1146,34 +1162,38 @@ def _get_roi_center_coordinates():
 def render_parameter_page(parameter_type):
     """
     Full page for one parameter, in the required order:
-    1. Legend + Management Guidance Panel
-    2. Side-by-side imagery
-    3. Time-series chart
-    4. Statistics Summary
+    1. Statistics Summary (خلاصه آماری)
+    2. Legend + Management Guidance Panel
+    3. Side-by-side imagery (collapsible)
+    4. Time-series chart
     """
     if parameter_type == PARAM_TURBIDITY:
         _render_active_section_badge("🌊", "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
-        render_turbidity_guidance_panel()
     else:
         _render_active_section_badge("🌿", "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
+
+    results = st.session_state.results.get(parameter_type, [])
+
+    if results:
+        display_statistics_summary(results, parameter_type)
+        st.divider()
+
+    if parameter_type == PARAM_TURBIDITY:
+        render_turbidity_guidance_panel()
+    else:
         render_chlorophyll_guidance_panel()
 
     st.divider()
-
-    results = st.session_state.results.get(parameter_type, [])
 
     if not results:
         st.info("برای مشاهده نتایج، ابتدا یک منطقه را انتخاب و پایش را اجرا کنید.")
         return
 
-    st.markdown("#### 🖼️ تصاویر پردازش‌شده")
-    display_side_by_side_imagery(results, parameter_type)
+    with st.expander("🖼️ تصاویر پردازش‌شده (برای نمایش/پنهان‌سازی کلیک کنید)", expanded=False):
+        display_side_by_side_imagery(results, parameter_type)
 
     st.divider()
     display_time_series_chart(results, parameter_type)
-
-    st.divider()
-    display_statistics_summary(results, parameter_type)
 
 
 # =============================================================================
@@ -2149,18 +2169,22 @@ def _inject_global_app_css():
 
         /* ---- Tabs ---- */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 6px;
+            gap: 10px;
         }
         .stTabs [data-baseweb="tab"] {
             background-color: #E1F1F3;
-            border-radius: 12px 12px 0 0;
+            border-radius: 16px 16px 0 0;
             color: var(--wq-navy);
-            font-weight: 700;
-            padding: 0.75rem 1.4rem;
+            font-weight: 800;
+            padding: 1.15rem 2.6rem;
+            min-height: 3.7rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         .stTabs [data-baseweb="tab"] p {
-            font-size: 1.22rem !important;
-            font-weight: 700 !important;
+            font-size: 1.65rem !important;
+            font-weight: 800 !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
         }
         .stTabs [data-baseweb="tab-panel"] {
