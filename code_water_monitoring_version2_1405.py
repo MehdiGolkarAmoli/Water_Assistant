@@ -161,6 +161,12 @@ if 'download_summary' not in st.session_state:
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
+if 'map_version' not in st.session_state:
+    # Bumped whenever a region is saved or deleted. It is part of the map
+    # widget's key, so the widget is remounted and drops the shape still held
+    # by its own drawing toolbar — otherwise a deleted region would be sent
+    # back by the widget and reappear on the map.
+    st.session_state.map_version = 0
 if 'pending_run' not in st.session_state:
     # 'start' | 'resume' | None — a click arms the run, the next script run
     # executes it (so the page is fully rendered before processing begins)
@@ -2996,18 +3002,22 @@ def _render_roi_map():
     with map_col_c:
         fmap = _build_roi_map(interactive=not busy, highlight_index=highlight)
 
+        # The version suffix forces a fresh widget after a save or a delete, so
+        # the drawing toolbar cannot hand back a region the user just removed.
+        version = st.session_state.map_version
+
         if busy:
             # returned_objects=[] -> the component never sends data back, so the
             # map cannot trigger a rerun in the middle of the processing run.
             _st_folium_compat(
-                fmap, key="roi_map_locked", width=700, height=500,
+                fmap, key=f"roi_map_locked_{version}", width=700, height=500,
                 returned_objects=[],
             )
             st.caption("🔒 نقشه در حین پردازش فقط برای نمایش است؛ منطقه انتخاب‌شده با رنگ نارنجی مشخص شده است.")
             return
 
         map_data = _st_folium_compat(
-            fmap, key="roi_map", width=700, height=500,
+            fmap, key=f"roi_map_{version}", width=700, height=500,
             returned_objects=["last_active_drawing"],
         )
 
@@ -3035,7 +3045,15 @@ def _render_roi_map():
             else:
                 st.info("✅ منطقه رسم شد (خط‌چین قرمز). برای نگه‌داشتن آن، «ذخیره منطقه» را بزنید.")
 
-        if st.button("💾 ذخیره منطقه", use_container_width=True):
+        has_unsaved_draft = (
+            st.session_state.last_drawn_polygon is not None
+            and not any(p.equals(st.session_state.last_drawn_polygon)
+                        for p in st.session_state.drawn_polygons)
+        )
+
+        save_col, discard_col = st.columns([3, 1])
+
+        if save_col.button("💾 ذخیره منطقه", use_container_width=True):
             if st.session_state.last_drawn_polygon:
                 is_duplicate = any(
                     existing.equals(st.session_state.last_drawn_polygon)
@@ -3044,12 +3062,24 @@ def _render_roi_map():
                 if not is_duplicate:
                     st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
                     st.session_state.selected_region_index = len(st.session_state.drawn_polygons) - 1
+                    st.session_state.map_version += 1
                     st.success("✅ منطقه ذخیره شد!")
                     st.rerun()
                 else:
                     st.warning("⚠️ این منطقه قبلاً ذخیره شده است")
             else:
                 st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
+
+        # Lets the user drop a region drawn by mistake without saving it first.
+        if discard_col.button(
+            "✖️ حذف رسم",
+            use_container_width=True,
+            disabled=not has_unsaved_draft,
+            help="حذف منطقه‌ای که رسم شده اما ذخیره نشده است",
+        ):
+            st.session_state.last_drawn_polygon = None
+            st.session_state.map_version += 1
+            st.rerun()
 
 
 # =============================================================================
@@ -3071,7 +3101,17 @@ def render_setup_page():
             c1.write(f"**منطقه {i+1}**: ~{p.area * 111 * 111:.2f} کیلومتر مربع")
             c2.write(f"مرکز: ({centroid.y:.4f}, {centroid.x:.4f})")
             if c3.button("🗑️", key=f"del_{i}", disabled=st.session_state.processing_in_progress):
-                st.session_state.drawn_polygons.pop(i)
+                removed = st.session_state.drawn_polygons.pop(i)
+
+                # The deleted region must also leave the map. Two things keep a
+                # copy of it: the "last drawn" polygon in session state, and the
+                # map widget's own drawing toolbar — clear the first, and bump
+                # map_version so the widget is remounted and forgets the second.
+                if st.session_state.last_drawn_polygon is not None and \
+                        st.session_state.last_drawn_polygon.equals(removed):
+                    st.session_state.last_drawn_polygon = None
+                st.session_state.map_version += 1
+
                 if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
                     st.session_state.selected_region_index = max(0, len(st.session_state.drawn_polygons) - 1)
                 st.rerun()
