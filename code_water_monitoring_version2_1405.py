@@ -2615,6 +2615,17 @@ def _inject_global_app_css():
         .wq-status-ready   { background:#E4F7EC; color:#14713F; border-color:#B9E7CD; }
         .wq-status-idle    { background:#EDF5F6; color:#40646B; border-color:#CFE4E7; }
         .wq-status-running { background:#FEF3DE; color:#96610A; border-color:#F7DDA9; }
+        /* Right-align the status chip (RTL) and vertically match the button */
+        .wq-status-line {
+            direction: rtl;
+            text-align: right;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            height: 100%;
+            min-height: 2.6rem;
+        }
+        .wq-status-strip-spacer { height: 0.45rem; }
 
         /* ---- Results-ready banner on the first page ---- */
         .wq-ready-banner {
@@ -2818,8 +2829,14 @@ def _render_top_nav():
 
 
 def _render_status_strip():
-    """Run status + 'clear results' action (previously in the sidebar)."""
-    col_status, col_clear = st.columns([3, 1])
+    """
+    Run status + 'clear results' action. Shown on the first page directly below
+    the «شروع پایش» / «ادامه از محل قطع» buttons (it used to live in the
+    sidebar, which has been removed in favour of the top navigation).
+    """
+    st.markdown('<div class="wq-status-strip-spacer"></div>', unsafe_allow_html=True)
+
+    col_clear, col_status = st.columns([1, 3])
 
     with col_status:
         if st.session_state.processing_in_progress:
@@ -2829,7 +2846,9 @@ def _render_status_strip():
         else:
             chip_class, chip_text = "wq-status-idle", "ℹ️ هنوز پایشی انجام نشده است"
         st.markdown(
-            f'<span class="wq-status-chip {chip_class}">{chip_text}</span>',
+            f'<div class="wq-status-line">'
+            f'<span class="wq-status-chip {chip_class}">{chip_text}</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
@@ -2859,8 +2878,6 @@ def _render_status_strip():
 # Page 1 — area of interest, time period, and "start monitoring"
 # =============================================================================
 def render_setup_page():
-    _render_status_strip()
-
     # ==========================================================================
     # 1. Region selection
     # ==========================================================================
@@ -3103,6 +3120,9 @@ def render_setup_page():
             "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
             "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
         )
+
+    # --- Run status + clear-results action, directly under the run buttons ---
+    _render_status_strip()
 
     # Simple, user-friendly download summary (persists after run)
     if st.session_state.download_summary:
