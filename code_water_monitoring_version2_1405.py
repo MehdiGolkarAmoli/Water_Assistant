@@ -171,6 +171,16 @@ if 'download_summary' not in st.session_state:
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
+if 'map_center' not in st.session_state:
+    # Last map view reported by the widget, so the view is preserved across
+    # reruns (deleting a region must not throw the user back to the world view)
+    st.session_state.map_center = None
+if 'map_zoom' not in st.session_state:
+    st.session_state.map_zoom = None
+if 'refit_map' not in st.session_state:
+    # True only when the view SHOULD jump: first render, a new region drawn,
+    # a region saved, or a different region selected for monitoring.
+    st.session_state.refit_map = True
 if 'map_version' not in st.session_state:
     # Bumped whenever a region is saved or deleted. It is part of the map
     # widget's key, so the widget is remounted and drops the shape still held
@@ -2974,130 +2984,198 @@ def _format_area_km2(area_km2):
 _LIVE_AREA_JS = """
 {% macro script(this, kwargs) %}
 (function () {
-  try {
-    var map = {{ this._parent.get_name() }};
-    if (!map || typeof L === 'undefined' || !L.Draw || !L.GeometryUtil) { return; }
+  var MAP = {{ this._parent.get_name() }};
 
-    var label = L.DomUtil.create('div', '', map.getContainer());
-    label.style.cssText = [
-      'position:absolute',
-      'z-index:650',
-      'display:none',
-      'pointer-events:none',
-      'white-space:nowrap',
-      'direction:rtl',
-      'transform:translateX(-50%)',
-      'background:rgba(255,255,255,0.96)',
-      'color:#0A3F4A',
-      'border-top:3px solid #E04B2F',
-      'border-bottom:3px solid #E04B2F',
-      'border-radius:999px',
-      'padding:4px 14px',
-      "font-family:'B Nazanin','BNazanin','Vazirmatn',Tahoma,sans-serif",
-      'font-size:14px',
-      'font-weight:700',
-      'box-shadow:0 3px 10px rgba(10,63,74,0.40)'
-    ].join(';');
+  function setup() {
+    try {
+      if (typeof L === 'undefined' || !MAP || !MAP.getContainer) { return false; }
+      var container = MAP.getContainer();
+      if (!container) { return false; }
 
-    var lastPts = null;
+      var label = L.DomUtil.create('div', '', container);
+      label.style.cssText = [
+        'position:absolute',
+        'z-index:1000',
+        'display:none',
+        'pointer-events:none',
+        'white-space:nowrap',
+        'direction:rtl',
+        'transform:translateX(-50%)',
+        'background:rgba(255,255,255,0.97)',
+        'color:#0A3F4A',
+        'border:2px solid #E04B2F',
+        'border-radius:999px',
+        'padding:4px 14px',
+        "font-family:'B Nazanin','BNazanin','Vazirmatn',Tahoma,sans-serif",
+        'font-size:14px',
+        'font-weight:700',
+        'box-shadow:0 3px 10px rgba(10,63,74,0.40)'
+      ].join(';');
 
-    function formatArea(m2) {
-      var km2 = m2 / 1000000.0;
-      if (km2 >= 100) { return km2.toFixed(0) + ' کیلومتر مربع'; }
-      if (km2 >= 10) { return km2.toFixed(1) + ' کیلومتر مربع'; }
-      if (km2 >= 0.01) { return km2.toFixed(2) + ' کیلومتر مربع'; }
-      return Math.round(m2) + ' متر مربع';
-    }
+      var state = { active: false, type: null, anchor: null, known: null, pts: null };
 
-    function hideLabel() {
-      label.style.display = 'none';
-      lastPts = null;
-    }
-
-    function placeLabel(pts) {
-      if (!pts || pts.length < 3) { label.style.display = 'none'; return; }
-      var area;
-      try {
-        area = L.GeometryUtil.geodesicArea(pts);
-      } catch (err) {
-        label.style.display = 'none';
-        return;
+      // Same spherical-excess formula Leaflet.draw uses, kept local so the
+      // badge does not depend on L.GeometryUtil being present.
+      function geodesicArea(ring) {
+        var n = ring.length, area = 0.0, d2r = Math.PI / 180, i, p1, p2;
+        if (n < 3) { return 0; }
+        for (i = 0; i < n; i++) {
+          p1 = ring[i];
+          p2 = ring[(i + 1) % n];
+          area += ((p2.lng - p1.lng) * d2r) *
+                  (2 + Math.sin(p1.lat * d2r) + Math.sin(p2.lat * d2r));
+        }
+        return Math.abs(area * 6378137.0 * 6378137.0 / 2.0);
       }
-      if (!isFinite(area) || area <= 0) { label.style.display = 'none'; return; }
 
-      var bounds = L.latLngBounds(pts);
-      var anchor = L.latLng(bounds.getSouth(), bounds.getCenter().lng);
-      var pt = map.latLngToContainerPoint(anchor);
+      function formatArea(m2) {
+        var km2 = m2 / 1000000.0;
+        if (km2 >= 100) { return km2.toFixed(0) + ' کیلومتر مربع'; }
+        if (km2 >= 10) { return km2.toFixed(1) + ' کیلومتر مربع'; }
+        if (km2 >= 0.01) { return km2.toFixed(2) + ' کیلومتر مربع'; }
+        return Math.round(m2) + ' متر مربع';
+      }
 
-      label.innerHTML = 'مساحت: ' + formatArea(area);
-      label.style.left = pt.x + 'px';
-      label.style.top = (pt.y + 10) + 'px';
-      label.style.display = 'block';
-      lastPts = pts;
-    }
+      function hide() {
+        label.style.display = 'none';
+      }
 
-    function activeDrawer() {
-      return window.__wqActiveDrawer || null;
-    }
+      function reset() {
+        state.active = false;
+        state.type = null;
+        state.anchor = null;
+        state.known = null;
+        state.pts = null;
+        hide();
+      }
 
-    function currentPoints(cursor) {
-      var drawer = activeDrawer();
-      if (!drawer) { return null; }
-      try {
-        // Rectangle / simple shapes keep the in-progress geometry in _shape
-        if (drawer._shape && drawer._shape.getLatLngs) {
-          var rect = drawer._shape.getLatLngs();
-          if (rect && rect[0] && rect[0].length !== undefined) { return rect[0]; }
-          return rect;
+      function draw(ring) {
+        if (!ring || ring.length < 3) { hide(); return; }
+        var area = geodesicArea(ring);
+        if (!isFinite(area) || area <= 0) { hide(); return; }
+        var south = ring[0].lat, west = ring[0].lng, east = ring[0].lng, i;
+        for (i = 1; i < ring.length; i++) {
+          if (ring[i].lat < south) { south = ring[i].lat; }
+          if (ring[i].lng < west) { west = ring[i].lng; }
+          if (ring[i].lng > east) { east = ring[i].lng; }
         }
-        // Polygons keep the confirmed vertices in _poly; the cursor is the
-        // vertex the user has not clicked yet.
-        if (drawer._poly && drawer._poly.getLatLngs) {
-          var ll = drawer._poly.getLatLngs();
-          if (ll && ll.length && ll[0] && ll[0].length !== undefined) { ll = ll[0]; }
-          var pts = (ll || []).slice();
-          if (cursor) { pts.push(cursor); }
-          return pts;
+        var pt = MAP.latLngToContainerPoint(L.latLng(south, (west + east) / 2));
+        label.innerHTML = 'مساحت: ' + formatArea(area);
+        label.style.left = pt.x + 'px';
+        label.style.top = (pt.y + 10) + 'px';
+        label.style.display = 'block';
+        state.pts = ring;
+      }
+
+      function flatten(latlngs) {
+        while (latlngs && latlngs.length && latlngs[0] && latlngs[0].length !== undefined) {
+          latlngs = latlngs[0];
         }
-      } catch (err) {
+        return latlngs || [];
+      }
+
+      // Any polygon/polyline layer that appeared after drawing started is the
+      // shape currently being drawn. No private Leaflet.draw fields involved.
+      function newShapeLayer() {
+        var found = null;
+        try {
+          MAP.eachLayer(function (layer) {
+            if (found || !layer || typeof layer.getLatLngs !== 'function') { return; }
+            if (state.known && state.known[L.Util.stamp(layer)]) { return; }
+            found = layer;
+          });
+        } catch (err) {
+          return null;
+        }
+        return found;
+      }
+
+      function ringFor(cursor) {
+        // Rectangle: build it from the anchor corner and the cursor, so the
+        // area is live from the very first pixel of the drag.
+        if (state.type === 'rectangle' && state.anchor && cursor) {
+          var a = state.anchor;
+          if (Math.abs(a.lat - cursor.lat) > 1e-12 && Math.abs(a.lng - cursor.lng) > 1e-12) {
+            return [
+              L.latLng(a.lat, a.lng),
+              L.latLng(a.lat, cursor.lng),
+              L.latLng(cursor.lat, cursor.lng),
+              L.latLng(cursor.lat, a.lng)
+            ];
+          }
+          return null;
+        }
+
+        var layer = newShapeLayer();
+        if (layer) {
+          var ring = flatten(layer.getLatLngs()).slice();
+          var isRect = !!(L.Rectangle && layer instanceof L.Rectangle);
+          if (!isRect && cursor) { ring.push(cursor); }
+          return ring;
+        }
         return null;
       }
-      return null;
+
+      function onMove(cursor) {
+        if (!state.active || !cursor) { return; }
+        draw(ringFor(cursor));
+      }
+
+      MAP.on('draw:drawstart', function (e) {
+        state.active = true;
+        state.type = (e && e.layerType) ? e.layerType : null;
+        state.anchor = null;
+        state.pts = null;
+        state.known = {};
+        try {
+          MAP.eachLayer(function (layer) { state.known[L.Util.stamp(layer)] = true; });
+        } catch (err) {
+          state.known = null;
+        }
+        hide();
+      });
+
+      MAP.on('draw:drawstop', reset);
+      MAP.on('draw:created', reset);
+      MAP.on('draw:canceled', reset);
+
+      MAP.on('mousedown', function (e) {
+        if (state.active && !state.anchor && e && e.latlng) { state.anchor = e.latlng; }
+      });
+      MAP.on('mousemove', function (e) {
+        if (e && e.latlng) { onMove(e.latlng); }
+      });
+
+      // DOM-level backstop: fires even if Leaflet's own map events are
+      // swallowed by the active draw handler.
+      container.addEventListener('mousedown', function (ev) {
+        if (!state.active || state.anchor) { return; }
+        try { state.anchor = MAP.mouseEventToLatLng(ev); } catch (err) { return; }
+      }, true);
+      container.addEventListener('mousemove', function (ev) {
+        if (!state.active) { return; }
+        try { onMove(MAP.mouseEventToLatLng(ev)); } catch (err) { return; }
+      }, true);
+
+      MAP.on('move', function () { if (state.active && state.pts) { draw(state.pts); } });
+      MAP.on('zoom', function () { if (state.active && state.pts) { draw(state.pts); } });
+
+      return true;
+    } catch (err) {
+      return true;
     }
-
-    // Remember which draw handler is currently enabled. Patched once per page.
-    if (L.Draw.Feature && !L.Draw.Feature.prototype.__wqAreaPatched) {
-      var originalEnable = L.Draw.Feature.prototype.enable;
-      var originalDisable = L.Draw.Feature.prototype.disable;
-      L.Draw.Feature.prototype.enable = function () {
-        window.__wqActiveDrawer = this;
-        return originalEnable.apply(this, arguments);
-      };
-      L.Draw.Feature.prototype.disable = function () {
-        window.__wqActiveDrawer = null;
-        return originalDisable.apply(this, arguments);
-      };
-      L.Draw.Feature.prototype.__wqAreaPatched = true;
-    }
-
-    map.on('mousemove', function (e) {
-      if (!activeDrawer()) { return; }
-      placeLabel(currentPoints(e.latlng));
-    });
-
-    map.on('draw:drawvertex', function () {
-      if (activeDrawer()) { placeLabel(currentPoints(null)); }
-    });
-
-    map.on('draw:drawstop', hideLabel);
-    map.on('draw:created', hideLabel);
-
-    // Keep the badge glued to the shape while the map is panned or zoomed
-    map.on('move', function () { if (lastPts) { placeLabel(lastPts); } });
-    map.on('zoom', function () { if (lastPts) { placeLabel(lastPts); } });
-  } catch (err) {
-    // Never let a UI nicety break the map
   }
+
+  // The map variable may not be assigned yet depending on script order, so
+  // keep trying briefly instead of giving up on the first pass.
+  var tries = 0;
+  function attempt() {
+    tries += 1;
+    var ok = false;
+    try { ok = setup(); } catch (err) { ok = true; }
+    if (!ok && tries < 40) { setTimeout(attempt, 100); }
+  }
+  attempt();
 })();
 {% endmacro %}
 """
@@ -3167,7 +3245,16 @@ def _build_roi_map(interactive=True, highlight_index=None):
     else:
         center = [35.6892, 51.3890]
 
-    fmap = folium.Map(location=center, zoom_start=8, control_scale=True)
+    # Keep whatever the user was looking at. The map is only recentred on the
+    # regions when something actually warrants it (see refit_map) — deleting a
+    # region, in particular, must leave the view exactly where it was.
+    zoom = 8
+    if st.session_state.map_center and not st.session_state.refit_map:
+        center = list(st.session_state.map_center)
+    if st.session_state.map_zoom:
+        zoom = st.session_state.map_zoom
+
+    fmap = folium.Map(location=center, zoom_start=zoom, control_scale=True)
 
     folium.TileLayer(
         tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
@@ -3236,8 +3323,22 @@ def _build_roi_map(interactive=True, highlight_index=None):
     roi_layer.add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
 
-    if shapes:
-        fmap.fit_bounds([[ys_min, xs_min], [ys_max, xs_max]], padding=(25, 25))
+    # Recentre only when something asked for it (first render, a region just
+    # drawn, saved, or newly selected). On every other rerun — a deletion above
+    # all — the map keeps the view the user already had.
+    if shapes and st.session_state.refit_map:
+        if draft is not None and not draft_is_saved:
+            focus = draft                       # zoom to the region just drawn
+        elif highlight_index is not None and 0 <= highlight_index < len(saved):
+            focus = saved[highlight_index]      # zoom to the selected region
+        else:
+            focus = None
+
+        if focus is not None:
+            f_min_lon, f_min_lat, f_max_lon, f_max_lat = focus.bounds
+            fmap.fit_bounds([[f_min_lat, f_min_lon], [f_max_lat, f_max_lon]], padding=(25, 25))
+        else:
+            fmap.fit_bounds([[ys_min, xs_min], [ys_max, xs_max]], padding=(25, 25))
 
     return fmap
 
@@ -3272,8 +3373,24 @@ def _render_roi_map():
 
         map_data = _st_folium_compat(
             fmap, key=f"roi_map_{version}", width=700, height=500,
-            returned_objects=["last_active_drawing"],
+            returned_objects=["last_active_drawing", "center", "zoom"],
         )
+
+        # The map has been drawn with whatever view was requested; any later
+        # rerun should keep the user's own view instead of re-fitting.
+        st.session_state.refit_map = False
+
+        # Remember where the user is looking, so the next rerun (a delete, for
+        # example) can rebuild the map at exactly the same place and zoom.
+        if map_data:
+            view_center = map_data.get('center')
+            view_zoom = map_data.get('zoom')
+            if isinstance(view_center, dict) and view_center.get('lat') is not None:
+                st.session_state.map_center = [view_center['lat'], view_center['lng']]
+            elif isinstance(view_center, (list, tuple)) and len(view_center) == 2:
+                st.session_state.map_center = [view_center[0], view_center[1]]
+            if isinstance(view_zoom, (int, float)):
+                st.session_state.map_zoom = view_zoom
 
         if map_data and map_data.get('last_active_drawing'):
             geom = (map_data['last_active_drawing'] or {}).get('geometry', {}) or {}
@@ -3287,13 +3404,9 @@ def _render_roi_map():
                     or not st.session_state.last_drawn_polygon.equals(new_polygon)
                 ):
                     st.session_state.last_drawn_polygon = new_polygon
-                    st.rerun()   # redraw immediately as a permanent layer
+                    st.session_state.refit_map = True   # zoom to the new region
+                    st.rerun()                          # redraw as a permanent layer
 
-        if st.session_state.last_drawn_polygon is not None:
-            already_saved = any(
-                p.equals(st.session_state.last_drawn_polygon)
-                for p in st.session_state.drawn_polygons
-            )
         has_unsaved_draft = (
             st.session_state.last_drawn_polygon is not None
             and not any(p.equals(st.session_state.last_drawn_polygon)
@@ -3329,6 +3442,7 @@ def _render_roi_map():
                     st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
                     st.session_state.selected_region_index = len(st.session_state.drawn_polygons) - 1
                     st.session_state.map_version += 1
+                    st.session_state.refit_map = True
                     st.success("✅ منطقه ذخیره شد!")
                     st.rerun()
                 else:
@@ -3377,6 +3491,8 @@ def render_setup_page():
                     st.session_state.last_drawn_polygon = None
                 st.session_state.map_version += 1
 
+                # Deliberately NOT setting refit_map: the view must stay exactly
+                # where the user had it, showing the same area at the same zoom.
                 if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
                     st.session_state.selected_region_index = max(0, len(st.session_state.drawn_polygons) - 1)
                 st.rerun()
@@ -3418,6 +3534,13 @@ def render_setup_page():
             index=st.session_state.selected_region_index,
             disabled=st.session_state.processing_in_progress
         )
+
+        if selected_idx != st.session_state.selected_region_index:
+            # Choosing a different region is a deliberate "show me this one",
+            # so the map is allowed to recentre on it.
+            st.session_state.selected_region_index = selected_idx
+            st.session_state.refit_map = True
+            st.rerun()
 
         st.session_state.selected_region_index = selected_idx
         selected_polygon = st.session_state.drawn_polygons[selected_idx]
