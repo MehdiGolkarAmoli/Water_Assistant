@@ -171,16 +171,6 @@ if 'download_summary' not in st.session_state:
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
-if 'map_center' not in st.session_state:
-    # Last map view reported by the widget, so the view is preserved across
-    # reruns (deleting a region must not throw the user back to the world view)
-    st.session_state.map_center = None
-if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = None
-if 'refit_map' not in st.session_state:
-    # True only when the view SHOULD jump: first render, a new region drawn,
-    # a region saved, or a different region selected for monitoring.
-    st.session_state.refit_map = True
 if 'map_version' not in st.session_state:
     # Bumped whenever a region is saved or deleted. It is part of the map
     # widget's key, so the widget is remounted and drops the shape still held
@@ -3245,16 +3235,7 @@ def _build_roi_map(interactive=True, highlight_index=None):
     else:
         center = [35.6892, 51.3890]
 
-    # Keep whatever the user was looking at. The map is only recentred on the
-    # regions when something actually warrants it (see refit_map) — deleting a
-    # region, in particular, must leave the view exactly where it was.
-    zoom = 8
-    if st.session_state.map_center and not st.session_state.refit_map:
-        center = list(st.session_state.map_center)
-    if st.session_state.map_zoom:
-        zoom = st.session_state.map_zoom
-
-    fmap = folium.Map(location=center, zoom_start=zoom, control_scale=True)
+    fmap = folium.Map(location=center, zoom_start=8, control_scale=True)
 
     folium.TileLayer(
         tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
@@ -3323,22 +3304,8 @@ def _build_roi_map(interactive=True, highlight_index=None):
     roi_layer.add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
 
-    # Recentre only when something asked for it (first render, a region just
-    # drawn, saved, or newly selected). On every other rerun — a deletion above
-    # all — the map keeps the view the user already had.
-    if shapes and st.session_state.refit_map:
-        if draft is not None and not draft_is_saved:
-            focus = draft                       # zoom to the region just drawn
-        elif highlight_index is not None and 0 <= highlight_index < len(saved):
-            focus = saved[highlight_index]      # zoom to the selected region
-        else:
-            focus = None
-
-        if focus is not None:
-            f_min_lon, f_min_lat, f_max_lon, f_max_lat = focus.bounds
-            fmap.fit_bounds([[f_min_lat, f_min_lon], [f_max_lat, f_max_lon]], padding=(25, 25))
-        else:
-            fmap.fit_bounds([[ys_min, xs_min], [ys_max, xs_max]], padding=(25, 25))
+    if shapes:
+        fmap.fit_bounds([[ys_min, xs_min], [ys_max, xs_max]], padding=(25, 25))
 
     return fmap
 
@@ -3373,24 +3340,8 @@ def _render_roi_map():
 
         map_data = _st_folium_compat(
             fmap, key=f"roi_map_{version}", width=700, height=500,
-            returned_objects=["last_active_drawing", "center", "zoom"],
+            returned_objects=["last_active_drawing"],
         )
-
-        # The map has been drawn with whatever view was requested; any later
-        # rerun should keep the user's own view instead of re-fitting.
-        st.session_state.refit_map = False
-
-        # Remember where the user is looking, so the next rerun (a delete, for
-        # example) can rebuild the map at exactly the same place and zoom.
-        if map_data:
-            view_center = map_data.get('center')
-            view_zoom = map_data.get('zoom')
-            if isinstance(view_center, dict) and view_center.get('lat') is not None:
-                st.session_state.map_center = [view_center['lat'], view_center['lng']]
-            elif isinstance(view_center, (list, tuple)) and len(view_center) == 2:
-                st.session_state.map_center = [view_center[0], view_center[1]]
-            if isinstance(view_zoom, (int, float)):
-                st.session_state.map_zoom = view_zoom
 
         if map_data and map_data.get('last_active_drawing'):
             geom = (map_data['last_active_drawing'] or {}).get('geometry', {}) or {}
@@ -3404,8 +3355,7 @@ def _render_roi_map():
                     or not st.session_state.last_drawn_polygon.equals(new_polygon)
                 ):
                     st.session_state.last_drawn_polygon = new_polygon
-                    st.session_state.refit_map = True   # zoom to the new region
-                    st.rerun()                          # redraw as a permanent layer
+                    st.rerun()   # redraw immediately as a permanent layer
 
         has_unsaved_draft = (
             st.session_state.last_drawn_polygon is not None
@@ -3442,7 +3392,6 @@ def _render_roi_map():
                     st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
                     st.session_state.selected_region_index = len(st.session_state.drawn_polygons) - 1
                     st.session_state.map_version += 1
-                    st.session_state.refit_map = True
                     st.success("✅ منطقه ذخیره شد!")
                     st.rerun()
                 else:
@@ -3491,8 +3440,6 @@ def render_setup_page():
                     st.session_state.last_drawn_polygon = None
                 st.session_state.map_version += 1
 
-                # Deliberately NOT setting refit_map: the view must stay exactly
-                # where the user had it, showing the same area at the same zoom.
                 if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
                     st.session_state.selected_region_index = max(0, len(st.session_state.drawn_polygons) - 1)
                 st.rerun()
@@ -3534,13 +3481,6 @@ def render_setup_page():
             index=st.session_state.selected_region_index,
             disabled=st.session_state.processing_in_progress
         )
-
-        if selected_idx != st.session_state.selected_region_index:
-            # Choosing a different region is a deliberate "show me this one",
-            # so the map is allowed to recentre on it.
-            st.session_state.selected_region_index = selected_idx
-            st.session_state.refit_map = True
-            st.rerun()
 
         st.session_state.selected_region_index = selected_idx
         selected_polygon = st.session_state.drawn_polygons[selected_idx]
