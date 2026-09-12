@@ -80,6 +80,38 @@ PARAM_CHLOROPHYLL = "Chlorophyll Index"
 CHL_VMIN = -1.0
 CHL_VMAX = 0.9
 
+# -----------------------------------------------------------------------------
+# Persian UI font (B Nazanin)
+# -----------------------------------------------------------------------------
+# "B Nazanin" is not a free web font, so it only renders if it happens to be
+# installed on the viewer's machine. To make the app look identical for every
+# user, drop a copy of the font file next to the app (any ONE of the paths
+# below) and it will be embedded directly into the page as a base64 @font-face
+# rule — no web server configuration needed.
+#
+#   Recommended:  assets/BNazanin.woff2      (smallest / fastest)
+#   Also fine:    assets/BNazanin.ttf  |  BNazanin.ttf  |  fonts/BNazanin.ttf
+#
+# If no file is found, the app silently falls back to Vazirmatn (loaded from
+# Google Fonts), exactly like the previous version — nothing breaks.
+BNAZANIN_FONT_CANDIDATES = [
+    "assets/BNazanin.woff2",
+    "assets/BNazanin.woff",
+    "assets/BNazanin.ttf",
+    "assets/B Nazanin.ttf",
+    "assets/B-Nazanin.ttf",
+    "fonts/BNazanin.woff2",
+    "fonts/BNazanin.ttf",
+    "BNazanin.woff2",
+    "BNazanin.ttf",
+    "B Nazanin.ttf",
+]
+
+# Optional: if you prefer to host the font on Google Drive (like the app logo),
+# put the shareable file ID here and leave the local files out. The file must be
+# shared as "Anyone with the link -> Viewer".
+BNAZANIN_FONT_DRIVE_ID = ""
+
 # Download settings
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
@@ -128,6 +160,10 @@ if 'download_summary' not in st.session_state:
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
+if 'active_page' not in st.session_state:
+    # Which of the four top-navigation pages is currently shown:
+    # 'setup' | 'turbidity' | 'chlorophyll' | 'chat'
+    st.session_state.active_page = 'setup'
 
 
 # =============================================================================
@@ -1931,6 +1967,83 @@ def render_expert_chat_tab():
 # matplotlib figures used to render scientific results, and it does not
 # alter any data-processing, calculation, or workflow logic.
 # =============================================================================
+@st.cache_data(show_spinner=False)
+def _load_bnazanin_font():
+    """
+    Look for a local B Nazanin font file (see BNAZANIN_FONT_CANDIDATES) and, if
+    found, return (base64_data, css_format, absolute_path) so it can be embedded
+    straight into the page as an @font-face rule. Falls back to the optional
+    Google Drive copy, and finally to (None, None, None) — in which case the app
+    keeps using the existing "locally installed B Nazanin, else Vazirmatn"
+    behaviour and nothing breaks.
+    """
+    ext_to_format = {
+        ".woff2": "woff2",
+        ".woff": "woff",
+        ".ttf": "truetype",
+        ".otf": "opentype",
+    }
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    for rel_path in BNAZANIN_FONT_CANDIDATES:
+        for candidate in (os.path.join(base_dir, rel_path), rel_path):
+            if os.path.isfile(candidate):
+                ext = os.path.splitext(candidate)[1].lower()
+                fmt = ext_to_format.get(ext)
+                if not fmt:
+                    continue
+                try:
+                    with open(candidate, "rb") as f:
+                        return base64.b64encode(f.read()).decode(), fmt, os.path.abspath(candidate)
+                except Exception:
+                    continue
+
+    if BNAZANIN_FONT_DRIVE_ID:
+        try:
+            url = f"https://drive.google.com/uc?export=download&id={BNAZANIN_FONT_DRIVE_ID}"
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            return base64.b64encode(response.content).decode(), "truetype", None
+        except Exception:
+            pass
+
+    return None, None, None
+
+
+def _bnazanin_font_face_css():
+    """Return the @font-face block for B Nazanin (empty string if unavailable)."""
+    font_b64, fmt, font_path = _load_bnazanin_font()
+    if not font_b64:
+        return ""
+
+    # Make the same font available to matplotlib as well, so the legends and the
+    # time-series charts use B Nazanin too instead of the generic fallback.
+    if font_path and os.path.splitext(font_path)[1].lower() in (".ttf", ".otf"):
+        try:
+            import matplotlib.font_manager as fm
+            fm.fontManager.addfont(font_path)
+        except Exception:
+            pass
+
+    return f"""
+        @font-face {{
+            font-family: 'B Nazanin';
+            src: url(data:font/{fmt};charset=utf-8;base64,{font_b64}) format('{fmt}');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }}
+        @font-face {{
+            font-family: 'B Nazanin';
+            src: url(data:font/{fmt};charset=utf-8;base64,{font_b64}) format('{fmt}');
+            font-weight: bold;
+            font-style: normal;
+            font-display: swap;
+        }}
+    """
+
+
 def _inject_global_app_css():
     """
     Applies a light, water-themed color palette plus the Persian "B Nazanin"
@@ -1941,6 +2054,12 @@ def _inject_global_app_css():
     body, so widgets such as the folium map, matplotlib figures, and layout
     columns keep their normal structure and behaviour.
     """
+    # Embedded B Nazanin (if a font file was supplied) — injected first so the
+    # font-family stacks below resolve to the real font for every visitor.
+    font_face = _bnazanin_font_face_css()
+    if font_face:
+        st.markdown(f"<style>{font_face}</style>", unsafe_allow_html=True)
+
     st.markdown(
         """
         <style>
@@ -2346,6 +2465,208 @@ def _inject_global_app_css():
             background-color: #DDF2F4;
             transition: background-color 0.15s ease;
         }
+
+        /* =====================================================================
+           TOP NAVIGATION BAR (the four pages)
+           The nav is built from four normal Streamlit buttons laid out in
+           columns; everything below is purely the styling that turns them into
+           a large, professional, right-to-left tab bar.
+           Two selector families are used so the styling works on every recent
+           Streamlit version: the modern per-key class (.st-key-wqnav_*) and a
+           structural fallback anchored on the hidden .wq-nav-anchor marker.
+           ===================================================================== */
+        .wq-nav-anchor { display: none; }
+
+        /* Right-to-left order + tighter spacing for the nav row */
+        div[class*="st-key-wqnav_"] { margin: 0 !important; }
+
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"],
+        .element-container:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"],
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + div[data-testid="stHorizontalBlock"] {
+            direction: rtl;
+            flex-direction: row-reverse;
+            gap: 0.55rem !important;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid var(--wq-border);
+            border-radius: 18px;
+            padding: 0.5rem;
+            box-shadow: 0 4px 18px rgba(10, 63, 74, 0.10);
+            margin-bottom: 1.6rem;
+            backdrop-filter: blur(4px);
+        }
+
+        /* ---- Base (inactive) tab look ---- */
+        div[class*="st-key-wqnav_"] .stButton > button,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
+            background: #E3F3F5 !important;
+            color: var(--wq-navy) !important;
+            border: 1px solid var(--wq-border) !important;
+            border-radius: 14px !important;
+            box-shadow: none !important;
+            padding: 0.85rem 0.6rem !important;
+            min-height: 4.1rem !important;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.75rem !important;
+            font-weight: 800 !important;
+            line-height: 1.5 !important;
+            direction: rtl !important;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+        }
+        div[class*="st-key-wqnav_"] .stButton > button p,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.75rem !important;
+            font-weight: 800 !important;
+            line-height: 1.5 !important;
+            margin: 0 !important;
+        }
+
+        div[class*="st-key-wqnav_"] .stButton > button:hover:not(:disabled),
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button:hover:not(:disabled) {
+            background: #D2ECEF !important;
+            border-color: var(--wq-teal-light) !important;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 14px rgba(14, 142, 153, 0.22) !important;
+        }
+
+        /* ---- Active tab (rendered as a "primary" button) ---- */
+        div[class*="st-key-wqnav_"] .stButton > button[kind="primary"],
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal) 55%, var(--wq-teal-light) 100%) !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-bottom: 5px solid var(--wq-amber) !important;
+            box-shadow: 0 6px 18px rgba(10, 63, 74, 0.30) !important;
+            transform: translateY(-2px);
+        }
+        div[class*="st-key-wqnav_"] .stButton > button[kind="primary"]:hover,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button[kind="primary"]:hover {
+            background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal-dark) 55%, var(--wq-teal) 100%) !important;
+        }
+
+        /* ---- Locked tabs (before the monitoring run has produced results) ---- */
+        div[class*="st-key-wqnav_"] .stButton > button:disabled,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button:disabled {
+            background: #EDF3F4 !important;
+            color: #A3B6BA !important;
+            border: 1px dashed #C6D7DA !important;
+            box-shadow: none !important;
+            transform: none;
+            cursor: not-allowed;
+        }
+
+        /* ---- Small hint line under the nav bar ---- */
+        .wq-nav-hint {
+            direction: rtl;
+            text-align: center;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.12rem;
+            color: #5C7B80;
+            margin: -1.05rem 0 1.5rem 0;
+        }
+
+        /* ---- App header (logo + title + subtitle) ---- */
+        .wq-app-header {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            direction: rtl;
+            margin-bottom: 0.25rem;
+        }
+        .wq-app-header img {
+            height: 3.1rem;
+            width: auto;
+            border-radius: 10px;
+        }
+        .wq-app-title {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 2.45rem;
+            font-weight: 800;
+            line-height: 1.5;
+            background: linear-gradient(90deg, var(--wq-navy) 0%, var(--wq-teal) 60%, var(--wq-teal-light) 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .wq-app-subtitle {
+            direction: rtl;
+            text-align: right;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.22rem;
+            color: #3C6067;
+            margin: 0 0 1.1rem 0;
+            padding-bottom: 0.9rem;
+            border-bottom: 3px solid var(--wq-teal-light);
+        }
+
+        /* ---- Status strip on the first page (replaces the old sidebar) ---- */
+        .wq-status-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            direction: rtl;
+            border-radius: 999px;
+            padding: 0.55rem 1.25rem;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.2rem;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+        .wq-status-ready   { background:#E4F7EC; color:#14713F; border-color:#B9E7CD; }
+        .wq-status-idle    { background:#EDF5F6; color:#40646B; border-color:#CFE4E7; }
+        .wq-status-running { background:#FEF3DE; color:#96610A; border-color:#F7DDA9; }
+
+        /* ---- Results-ready banner on the first page ---- */
+        .wq-ready-banner {
+            direction: rtl;
+            text-align: right;
+            background: linear-gradient(135deg, #0B6E76 0%, #2FC2CE 100%);
+            color: #ffffff;
+            border-radius: 16px;
+            padding: 1.1rem 1.5rem;
+            margin: 1.2rem 0 0.8rem 0;
+            box-shadow: 0 5px 18px rgba(10, 63, 74, 0.22);
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.35rem;
+            font-weight: 700;
+            line-height: 1.9;
+        }
+
+        /* ---- Slightly larger download / action buttons ---- */
+        .stDownloadButton > button p {
+            font-size: 1.2rem !important;
+            font-weight: 700 !important;
+        }
+        .stButton > button p {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        /* ---- Expander headers (تصاویر پردازش‌شده / جدول داده‌های ماهانه ...) ---- */
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary p,
+        details summary p {
+            direction: rtl;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.25rem !important;
+            font-weight: 700 !important;
+            color: var(--wq-navy) !important;
+        }
+        [data-testid="stExpander"] details {
+            border-radius: 14px !important;
+            border: 1px solid var(--wq-border) !important;
+            background: rgba(255, 255, 255, 0.65);
+            box-shadow: 0 2px 8px rgba(10, 63, 74, 0.06);
+        }
+
+        /* ---- Image captions under the monthly imagery ---- */
+        [data-testid="stImageCaption"] {
+            direction: rtl;
+            text-align: center;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.05rem !important;
+            color: var(--wq-teal-dark) !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2421,55 +2742,124 @@ def _get_app_logo_base64():
 
 
 # =============================================================================
-# Main Application
+# Top navigation (four pages) — replaces the old single scrolling page
 # =============================================================================
-def main():
-    _inject_global_app_css()
+# key, icon, Persian title
+NAV_PAGES = [
+    ("setup",       "🛰️", "تعریف پایش"),
+    ("turbidity",   "🌊", "کدورت"),
+    ("chlorophyll", "🌿", "کلروفیل"),
+    ("chat",        "🤖", "چت بات"),
+]
 
+
+def _has_any_results():
+    """True once at least one parameter has monitoring results in memory."""
+    return bool(st.session_state.results.get(PARAM_TURBIDITY)) or \
+           bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+
+
+def _render_app_header():
+    """Logo + gradient title + one-line subtitle, shown on every page."""
+    logo_b64 = _get_app_logo_base64()
+    logo_tag = (
+        f'<img src="data:image/png;base64,{logo_b64}" alt="">' if logo_b64 else ""
+    )
     st.markdown(
-        f'''
-        <div style="display:flex; align-items:center; gap:0.7rem; direction:rtl;">
-            <img src="data:image/png;base64,{_get_app_logo_base64()}" style="height:2.4rem; width:auto; border-radius:8px;">
-            <h1 style="margin:0;">سامانه پایش کیفیت آب</h1>
+        f"""
+        <div class="wq-app-header">
+            {logo_tag}
+            <span class="wq-app-title">سامانه پایش کیفیت آب</span>
         </div>
-        ''',
-        unsafe_allow_html=True
+        <div class="wq-app-subtitle">
+            🛰️ پایش خودکار <b>کدورت آب</b> و <b>غلظت کلروفیل</b> با استفاده از تصاویر ماهواره‌ای Sentinel-2
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.markdown(
-        "پایش خودکار **کدورت آب** و **غلظت کلروفیل** با استفاده از تصاویر ماهواره‌ای "
-    )
 
-    # Initialize Earth Engine
-    ee_ok, ee_msg = initialize_earth_engine()
-    if not ee_ok:
-        st.error(ee_msg)
-        st.stop()
 
-    # ==========================================================================
-    # Cache status (kept minimal — no technical internals)
-    # ==========================================================================
-    has_cache = bool(st.session_state.results.get(PARAM_TURBIDITY)) or \
-                bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+def _render_top_nav():
+    """
+    The four-page tab bar at the top of the app. The three result pages stay
+    visible at all times (so the structure of the app is obvious from the first
+    moment) but remain locked until a monitoring run has produced results.
+    """
+    results_ready = _has_any_results()
+    busy = st.session_state.processing_in_progress
 
-    if has_cache:
-        st.sidebar.success("✅ نتایج پایش قبلی موجود است")
-    else:
-        st.sidebar.info("هنوز پایشی انجام نشده است")
+    # Marker used by the CSS to find this row on Streamlit versions that do not
+    # expose per-key element classes.
+    st.markdown('<div class="wq-nav-anchor"></div>', unsafe_allow_html=True)
 
-    if st.session_state.processing_in_progress:
-        st.sidebar.warning("⏳ در حال پردازش...")
+    cols = st.columns(len(NAV_PAGES), gap="small")
 
-    if st.sidebar.button("🗑️ پاک کردن نتایج", disabled=st.session_state.processing_in_progress):
-        st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-        st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-        st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
-        st.session_state.mean_data = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-        st.session_state.download_summary = {}
-        st.session_state.current_temp_dir = None
-        st.session_state.processing_config = None
-        st.session_state.processing_complete = False
-        st.session_state.processing_in_progress = False
-        st.rerun()
+    for col, (page_key, icon, title) in zip(cols, NAV_PAGES):
+        locked = (page_key != "setup") and (not results_ready or busy)
+        is_active = (st.session_state.active_page == page_key)
+        label = f"{icon}  {title}" + ("  🔒" if locked else "")
+
+        clicked = col.button(
+            label,
+            key=f"wqnav_{page_key}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+            disabled=locked,
+        )
+        if clicked and not is_active:
+            st.session_state.active_page = page_key
+            st.rerun()
+
+    if not results_ready and not busy:
+        st.markdown(
+            '<div class="wq-nav-hint">🔒 صفحه‌های نتایج پس از اجرای پایش فعال می‌شوند.</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_status_strip():
+    """Run status + 'clear results' action (previously in the sidebar)."""
+    col_status, col_clear = st.columns([3, 1])
+
+    with col_status:
+        if st.session_state.processing_in_progress:
+            chip_class, chip_text = "wq-status-running", "⏳ در حال پردازش..."
+        elif _has_any_results():
+            chip_class, chip_text = "wq-status-ready", "✅ نتایج پایش موجود است"
+        else:
+            chip_class, chip_text = "wq-status-idle", "ℹ️ هنوز پایشی انجام نشده است"
+        st.markdown(
+            f'<span class="wq-status-chip {chip_class}">{chip_text}</span>',
+            unsafe_allow_html=True,
+        )
+
+    with col_clear:
+        if st.button(
+            "🗑️ پاک کردن نتایج",
+            use_container_width=True,
+            disabled=st.session_state.processing_in_progress,
+        ):
+            st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+            st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+            st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
+            st.session_state.mean_data = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+            st.session_state.download_summary = {}
+            st.session_state.current_temp_dir = None
+            st.session_state.processing_config = None
+            st.session_state.processing_complete = False
+            st.session_state.processing_in_progress = False
+            st.session_state.expert_analysis_json = None
+            st.session_state.expert_analysis_signature = None
+            st.session_state.expert_chat_history = []
+            st.session_state.active_page = 'setup'
+            st.rerun()
+
+
+# =============================================================================
+# Page 1 — area of interest, time period, and "start monitoring"
+# =============================================================================
+def render_setup_page():
+    _render_status_strip()
 
     # ==========================================================================
     # 1. Region selection
@@ -2725,34 +3115,67 @@ def main():
         )
 
     # ==========================================================================
-    # Results — two dedicated tabs
+    # Results are ready — point the user at the three result pages above
     # ==========================================================================
-    if st.session_state.processing_complete:
+    if st.session_state.processing_complete and _has_any_results():
         st.divider()
         _render_step_header(4, "📊", "نتایج پایش")
 
-        # --- Download combined time-series (Turbidity + Chlorophyll) as one .xlsx ---
-        if st.session_state.results.get(PARAM_TURBIDITY) or st.session_state.results.get(PARAM_CHLOROPHYLL):
-            st.download_button(
-                label="⬇️ دانلود سری زمانی کدورت (NDTI) و کلروفیل (NDCI) — یک فایل Excel",
-                data=generate_combined_timeseries_excel(),
-                file_name="water_quality_timeseries.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-
-        tab_turbidity, tab_chlorophyll, tab_expert = st.tabs(
-            ["🌊 کدورت آب (NDTI)", "🌿 کلروفیل", "💬 چت با متخصص"]
+        st.markdown(
+            """
+            <div class="wq-ready-banner">
+                ✅ پایش با موفقیت انجام شد.<br>
+                برای مشاهده نتایج، از نوار بالای صفحه یکی از صفحه‌های
+                <b>🌊 کدورت</b>، <b>🌿 کلروفیل</b> یا <b>🤖 چت بات</b> را انتخاب کنید.
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        with tab_turbidity:
-            render_parameter_page(PARAM_TURBIDITY)
+        # --- Download combined time-series (Turbidity + Chlorophyll) as one .xlsx ---
+        st.download_button(
+            label="⬇️ دانلود سری زمانی کدورت (NDTI) و کلروفیل (NDCI) — یک فایل Excel",
+            data=generate_combined_timeseries_excel(),
+            file_name="water_quality_timeseries.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
-        with tab_chlorophyll:
-            render_parameter_page(PARAM_CHLOROPHYLL)
 
-        with tab_expert:
-            render_expert_chat_tab()
+# =============================================================================
+# Main Application — header, top navigation, then the active page
+# =============================================================================
+def main():
+    _inject_global_app_css()
+    _render_app_header()
+
+    # Initialize Earth Engine
+    ee_ok, ee_msg = initialize_earth_engine()
+    if not ee_ok:
+        st.error(ee_msg)
+        st.stop()
+
+    # While a run is in progress the app always stays on the first page, so the
+    # progress bar and the resume logic remain visible to the user.
+    if st.session_state.processing_in_progress:
+        st.session_state.active_page = 'setup'
+
+    # If results were cleared while a result page was open, fall back to page 1.
+    if st.session_state.active_page != 'setup' and not _has_any_results():
+        st.session_state.active_page = 'setup'
+
+    _render_top_nav()
+
+    page = st.session_state.active_page
+
+    if page == 'turbidity':
+        render_parameter_page(PARAM_TURBIDITY)
+    elif page == 'chlorophyll':
+        render_parameter_page(PARAM_CHLOROPHYLL)
+    elif page == 'chat':
+        render_expert_chat_tab()
+    else:
+        render_setup_page()
 
 
 if __name__ == "__main__":
