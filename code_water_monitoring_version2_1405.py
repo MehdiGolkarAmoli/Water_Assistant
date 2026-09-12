@@ -29,6 +29,9 @@ import time
 import warnings
 import base64
 import json
+import hashlib
+import shutil
+import inspect
 from datetime import date
 from PIL import Image
 
@@ -113,11 +116,32 @@ BNAZANIN_FONT_CANDIDATES = [
 BNAZANIN_FONT_DRIVE_ID = ""
 
 # Download settings
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_DELAY_BASE = 2
 DOWNLOAD_TIMEOUT = 120
 CHUNK_SIZE = 8192
 MIN_FILE_SIZE = 10000
+
+# --- Connection-loss handling ------------------------------------------------
+# A dropped internet connection used to burn through several months in a row
+# (each one failing its few quick retries and being marked as "failed"), which
+# is why a later Resume appeared to "jump backwards" to an earlier month. The
+# downloader now recognises a connectivity failure and WAITS for the connection
+# to come back instead of consuming the month's retry budget.
+CONNECTIVITY_PROBE_URL = "https://earthengine.googleapis.com/"
+OFFLINE_RECHECK_INTERVAL = 8     # seconds between connectivity probes
+OFFLINE_MAX_WAIT = 300           # stop waiting after 5 minutes offline
+OFFLINE_MAX_WAIT_ROUNDS = 3      # at most 3 such waits per band
+
+# --- Persistent (session-independent) download cache -------------------------
+# The cache directory is derived deterministically from the region + date range
+# + processing settings, so the very same folder is found again after a page
+# reload, a websocket drop, or even a completely new session — instead of a
+# fresh random tempfile.mkdtemp() that made every already-downloaded month look
+# missing and triggered a full re-download.
+CACHE_ROOT_NAME = "wq_monitor_cache"
+CACHE_MAX_AGE_DAYS = 7           # old run folders are pruned automatically
+MANIFEST_FILE = "manifest.json"
 
 # Status constants
 STATUS_NO_DATA = "no_data"
@@ -160,6 +184,10 @@ if 'download_summary' not in st.session_state:
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
+if 'pending_run' not in st.session_state:
+    # 'start' | 'resume' | None — a click arms the run, the next script run
+    # executes it (so the page is fully rendered before processing begins)
+    st.session_state.pending_run = None
 if 'active_page' not in st.session_state:
     # Which of the four top-navigation pages is currently shown:
     # 'setup' | 'turbidity' | 'chlorophyll' | 'chat'
@@ -204,6 +232,188 @@ def initialize_earth_engine():
 # =============================================================================
 def get_utm_zone(longitude):
     return math.floor((longitude + 180) / 6) + 1
+
+
+# -----------------------------------------------------------------------------
+# Connectivity helpers — used to survive internet interruptions gracefully
+# -----------------------------------------------------------------------------
+# A Streamlit placeholder that the download layer can use to tell the user what
+# is happening while it waits for the connection to come back. It is created by
+# run_full_analysis() and left as None outside a processing run.
+_NET_STATUS_SLOT = None
+
+# Set once the connection has been gone for longer than OFFLINE_MAX_WAIT. From
+# that point the current run stops quickly instead of waiting the full timeout
+# again for every remaining band and month; the user resumes when they are back
+# online and nothing already downloaded is lost.
+_OFFLINE_ABORT = False
+
+
+def _reset_offline_abort():
+    global _OFFLINE_ABORT
+    _OFFLINE_ABORT = False
+
+
+def _set_net_status(message, kind="warning"):
+    """Show a live connection message above the progress bar (best effort)."""
+    if _NET_STATUS_SLOT is None:
+        return
+    try:
+        if kind == "success":
+            _NET_STATUS_SLOT.success(message)
+        else:
+            _NET_STATUS_SLOT.warning(message)
+    except Exception:
+        pass
+
+
+def _clear_net_status():
+    if _NET_STATUS_SLOT is None:
+        return
+    try:
+        _NET_STATUS_SLOT.empty()
+    except Exception:
+        pass
+
+
+def _internet_is_available(timeout=6):
+    """Cheap reachability probe against the Earth Engine endpoint."""
+    try:
+        requests.head(CONNECTIVITY_PROBE_URL, timeout=timeout)
+        return True
+    except requests.exceptions.RequestException:
+        return False
+    except Exception:
+        return False
+
+
+def _wait_for_connection(max_wait=OFFLINE_MAX_WAIT):
+    """
+    Block (bounded) until the internet connection comes back.
+
+    Returns True as soon as connectivity is restored, False if it is still down
+    after `max_wait` seconds. This is what stops a short outage from marking a
+    whole run of months as failed.
+    """
+    global _OFFLINE_ABORT
+
+    waited = 0
+    while waited < max_wait:
+        remaining = max_wait - waited
+        _set_net_status(
+            f"⚠️ ارتباط با سرور قطع شده است. دانلود متوقف نشده — "
+            f"تا {int(remaining)} ثانیه در انتظار برقراری مجدد اتصال..."
+        )
+        time.sleep(OFFLINE_RECHECK_INTERVAL)
+        waited += OFFLINE_RECHECK_INTERVAL
+
+        if _internet_is_available():
+            _set_net_status("✅ اتصال دوباره برقرار شد — ادامه دانلود از همان ماه...", kind="success")
+            time.sleep(1)
+            _clear_net_status()
+            return True
+
+    # Still offline after the full wait — stop this run rather than repeating
+    # the same long wait for every remaining band.
+    _OFFLINE_ABORT = True
+    _set_net_status(
+        "⛔ اتصال اینترنت برقرار نشد. پایش متوقف شد؛ ماه‌های دریافت‌شده حفظ شده‌اند "
+        "و با «ادامه از محل قطع» از همان‌جا ادامه می‌یابد."
+    )
+    return False
+
+
+# -----------------------------------------------------------------------------
+# Persistent download cache (survives reruns, reloads and new sessions)
+# -----------------------------------------------------------------------------
+def _cache_root():
+    return os.path.join(tempfile.gettempdir(), CACHE_ROOT_NAME)
+
+
+def get_cache_dir_for_config(config):
+    """
+    Deterministic cache folder for one monitoring run.
+
+    The folder name is a hash of the region geometry + date range + processing
+    settings, so the exact same run always maps to the exact same folder. Every
+    GeoTIFF already downloaded is therefore found again instantly, even if the
+    Streamlit session was lost entirely (which is precisely the case that used
+    to restart the download from scratch).
+    """
+    try:
+        payload = {
+            'coords': [[round(float(x), 6), round(float(y), 6)] for x, y in config['polygon_coords']],
+            'start': config['start_date'],
+            'end': config['end_date'],
+            'scale': config.get('scale', 10),
+            'cloud': config.get('cloudy_pixel_percentage', CLOUD_THRESHOLD),
+            'version': 1,
+        }
+        key = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
+    except Exception:
+        key = "fallback"
+
+    path = os.path.join(_cache_root(), key)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def prune_old_cache_dirs(max_age_days=CACHE_MAX_AGE_DAYS):
+    """Delete run folders older than `max_age_days` so the disk never fills up."""
+    root = _cache_root()
+    if not os.path.isdir(root):
+        return
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        for name in os.listdir(root):
+            folder = os.path.join(root, name)
+            try:
+                if os.path.isdir(folder) and os.path.getmtime(folder) < cutoff:
+                    shutil.rmtree(folder, ignore_errors=True)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def _manifest_path(temp_dir):
+    return os.path.join(temp_dir, MANIFEST_FILE)
+
+
+def load_cache_manifest(temp_dir):
+    """
+    Read the on-disk record of what each month resolved to last time.
+
+    Only 'complete' and 'no_data' outcomes are stored. 'no_data' is the valuable
+    one: without it, every new session had to re-ask Earth Engine about months
+    that are known to contain no usable imagery — slow, and pure waste.
+    """
+    try:
+        with open(_manifest_path(temp_dir), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_cache_manifest(temp_dir, manifest):
+    """Atomically persist the manifest (never raises)."""
+    try:
+        tmp = _manifest_path(temp_dir) + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, ensure_ascii=False)
+        os.replace(tmp, _manifest_path(temp_dir))
+    except Exception:
+        pass
+
+
+def clear_run_cache(temp_dir):
+    """Remove a run's cached GeoTIFFs (used by «پاک کردن نتایج»)."""
+    try:
+        if temp_dir and os.path.isdir(temp_dir) and _cache_root() in os.path.abspath(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def validate_geotiff_file(file_path, expected_bands=1):
@@ -388,6 +598,21 @@ def get_monthly_composite(wq_collection, aoi, year, month):
 # =============================================================================
 def download_band_with_retry(image, band, aoi, output_path, scale=10):
     """Download a single band with retry mechanism."""
+    # --- Cache check FIRST: a band that is already on disk needs no network at
+    # all (the old order asked Earth Engine for the AOI bounds even when the
+    # file was cached, which made every "resume" pay for a round trip per band).
+    if os.path.exists(output_path):
+        is_valid, msg = validate_geotiff_file(output_path, expected_bands=1)
+        if is_valid:
+            return True, "cached"
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+
+    if _OFFLINE_ABORT:
+        return False, "offline"
+
     try:
         region = aoi.bounds().getInfo()['coordinates']
     except Exception as e:
@@ -395,17 +620,19 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
 
     temp_path = output_path + '.tmp'
     if os.path.exists(temp_path):
-        os.remove(temp_path)
-
-    if os.path.exists(output_path):
-        is_valid, msg = validate_geotiff_file(output_path, expected_bands=1)
-        if is_valid:
-            return True, "cached"
-        os.remove(output_path)
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
 
     last_error = None
+    attempt = 0
+    offline_rounds = 0
 
-    for attempt in range(MAX_RETRIES):
+    while attempt < MAX_RETRIES:
+        connection_lost = False
+        last_error = None
+
         try:
             url = image.select(band).getDownloadURL({
                 'scale': scale, 'region': region, 'format': 'GEO_TIFF', 'bands': [band]
@@ -441,26 +668,41 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
                     raise Exception(last_error)
             else:
                 last_error = f"HTTP {response.status_code}"
+                # 429/5xx are transient server-side conditions, not a broken file
                 raise Exception(last_error)
 
         except requests.exceptions.Timeout:
             last_error = "Timeout"
-        except requests.exceptions.ConnectionError:
+            connection_lost = True
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError):
             last_error = "Connection error"
+            connection_lost = True
         except Exception as e:
             if last_error is None:
                 last_error = str(e)
+            # Earth Engine URL generation itself also fails when the link drops
+            if any(token in str(e).lower() for token in
+                   ('connection', 'timed out', 'timeout', 'network', 'ssl', 'resolve')):
+                connection_lost = True
 
-        for f in [output_path, temp_path]:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except:
-                    pass
+        # Remove the half-written temporary file (never the validated output)
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
 
-        if attempt < MAX_RETRIES - 1:
-            wait_time = RETRY_DELAY_BASE ** (attempt + 1)
-            time.sleep(wait_time)
+        # --- Internet outage: wait for it to come back, do NOT spend a retry ---
+        if connection_lost and not _internet_is_available():
+            if offline_rounds < OFFLINE_MAX_WAIT_ROUNDS and _wait_for_connection():
+                offline_rounds += 1
+                continue   # same attempt number — the month is not "used up"
+            return False, "offline"
+
+        attempt += 1
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY_BASE ** min(attempt, 4))
 
     return False, last_error
 
@@ -667,6 +909,25 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
     if not isinstance(st.session_state.month_statuses.get(parameter_type), dict):
         st.session_state.month_statuses[parameter_type] = {}
 
+    # ------------------------------------------------------------------
+    # Restore the on-disk manifest first (survives a completely lost session).
+    # Only 'no_data' months are trusted blindly; 'complete' months still have to
+    # pass file validation below before they are treated as done.
+    # ------------------------------------------------------------------
+    manifest = load_cache_manifest(temp_dir)
+    param_manifest = manifest.get(parameter_type, {})
+    if isinstance(param_manifest, dict):
+        for month_name, entry in param_manifest.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get('status') == STATUS_NO_DATA and \
+                    month_name not in st.session_state.month_statuses[parameter_type]:
+                st.session_state.month_statuses[parameter_type][month_name] = {
+                    'status': STATUS_NO_DATA, 'message': 'No images (cached)'
+                }
+    else:
+        param_manifest = {}
+
     downloaded_months = {}
 
     if resume and st.session_state.downloaded_months.get(parameter_type):
@@ -699,15 +960,20 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
                 'status': STATUS_COMPLETE, 'message': 'Cached (disk)'
             }
 
-    # Months not yet downloaded (skip ones already done or already statused as no-data)
-    already_statused = {
+    # Months still to do.
+    # NOTE: only STATUS_NO_DATA is treated as "settled". A month marked
+    # STATUS_COMPLETE is skipped *only* because it is already in
+    # downloaded_months (i.e. its files were validated on disk a moment ago) —
+    # relying on the status alone used to make a month whose files had gone
+    # missing be skipped forever.
+    settled_months = {
         m for m, s in st.session_state.month_statuses[parameter_type].items()
-        if s.get('status') in (STATUS_NO_DATA, STATUS_COMPLETE)
+        if s.get('status') == STATUS_NO_DATA
     }
     months_to_process = [
         m for m in month_infos
         if m['month_name'] not in downloaded_months
-        and m['month_name'] not in already_statused
+        and m['month_name'] not in settled_months
     ]
 
     available_count = len(downloaded_months)  # start with already-recovered months
@@ -721,34 +987,51 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
         progress_callback(processed_count, total_months, None)
 
     # ------------------------------------------------------------------
-    # FIX B: Per-month EE + download loop with immediate session state writes
+    # Per-month EE + download step, with immediate session-state AND on-disk
+    # manifest writes so no completed work is ever lost.
     # ------------------------------------------------------------------
-    for month_info in months_to_process:
+    def _record_status(month_name, status, message):
+        st.session_state.month_statuses[parameter_type][month_name] = {
+            'status': status, 'message': message
+        }
+        # Persist only settled outcomes — a transient failure must never be
+        # written to disk as if the month were finished.
+        if status in (STATUS_COMPLETE, STATUS_NO_DATA):
+            param_manifest[month_name] = {'status': status, 'message': message}
+            manifest[parameter_type] = param_manifest
+            save_cache_manifest(temp_dir, manifest)
+
+    def _handle_month(month_info, is_retry=False):
+        """Process one month. Returns True when the month ends up complete."""
+        nonlocal available_count
         month_name = month_info['month_name']
 
-        # FIX C: Wrap every EE server call so a transient error skips the month
+        if progress_callback:
+            progress_callback(processed_count, total_months, month_name, is_retry)
+
+        # Every EE server call is wrapped: a transient error must not crash the
+        # pipeline, and a genuine connection loss waits instead of failing fast.
         try:
             composite, count, stats = get_monthly_composite(
                 wq_collection, aoi, month_info['year'], month_info['month']
             )
         except Exception:
-            # Network or EE error — mark as failed and continue to next month
-            st.session_state.month_statuses[parameter_type][month_name] = {
-                'status': STATUS_FAILED, 'message': 'EE request failed'
-            }
-            processed_count += 1
-            if progress_callback:
-                progress_callback(processed_count, total_months, month_name)
-            continue
+            if not _internet_is_available():
+                _wait_for_connection()
+                try:
+                    composite, count, stats = get_monthly_composite(
+                        wq_collection, aoi, month_info['year'], month_info['month']
+                    )
+                except Exception:
+                    _record_status(month_name, STATUS_FAILED, 'EE request failed')
+                    return False
+            else:
+                _record_status(month_name, STATUS_FAILED, 'EE request failed')
+                return False
 
         if composite is None or count == 0:
-            st.session_state.month_statuses[parameter_type][month_name] = {
-                'status': STATUS_NO_DATA, 'message': 'No images'
-            }
-            processed_count += 1
-            if progress_callback:
-                progress_callback(processed_count, total_months, month_name)
-            continue
+            _record_status(month_name, STATUS_NO_DATA, 'No images')
+            return False
 
         available_count += 1
 
@@ -756,10 +1039,7 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             composite, aoi, temp_dir, month_name, param_short, scale
         )
 
-        # FIX D: Write to session state immediately after each month — not at end
-        st.session_state.month_statuses[parameter_type][month_name] = {
-            'status': status, 'message': message
-        }
+        _record_status(month_name, status, message)
 
         if status == STATUS_COMPLETE:
             downloaded_months[month_name] = {'wq_index': wq_path, 'rgb': rgb_path}
@@ -767,10 +1047,39 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             st.session_state.downloaded_months[parameter_type][month_name] = {
                 'wq_index': wq_path, 'rgb': rgb_path
             }
+            return True
 
+        return False
+
+    # --- Main pass, in chronological order ---
+    for month_info in months_to_process:
+        if _OFFLINE_ABORT:
+            break   # connection gone for good — stop instead of failing every month
+        _handle_month(month_info, is_retry=False)
         processed_count += 1
         if progress_callback:
-            progress_callback(processed_count, total_months, month_name)
+            progress_callback(processed_count, total_months, month_info['month_name'])
+
+    # --- Second pass: re-try months that failed during this run --------------
+    # This is what keeps an internet interruption from leaking into the *next*
+    # run. Previously the failed months were left behind and only picked up on a
+    # later Resume, which is what made the progress appear to jump backwards
+    # ("downloading month 13 … suddenly month 9 again").
+    failed_months = [
+        m for m in months_to_process
+        if m['month_name'] not in downloaded_months
+        and st.session_state.month_statuses[parameter_type]
+            .get(m['month_name'], {}).get('status') == STATUS_FAILED
+    ]
+
+    if failed_months and not _OFFLINE_ABORT and _internet_is_available():
+        for month_info in failed_months:
+            if _OFFLINE_ABORT:
+                break
+            _handle_month(month_info, is_retry=True)
+
+    if progress_callback:
+        progress_callback(max(processed_count, already_done_count), total_months, None)
 
     # ------------------------------------------------------------------
     # Thumbnail generation (uses only successfully downloaded months)
@@ -802,9 +1111,26 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
     - processing_config is written to session state here so the main() button
       handler can pass it to a resume run later.
     """
-    if st.session_state.current_temp_dir is None or not os.path.exists(st.session_state.current_temp_dir):
-        st.session_state.current_temp_dir = tempfile.mkdtemp()
-    temp_dir = st.session_state.current_temp_dir
+    global _NET_STATUS_SLOT
+
+    # ------------------------------------------------------------------
+    # Cache folder: deterministic for this exact region + date range, so every
+    # already-downloaded month is found again after a reload, a dropped
+    # websocket, or a brand-new session. (The old tempfile.mkdtemp() produced a
+    # different folder each time, which is why a lost session restarted the
+    # whole download.)
+    # ------------------------------------------------------------------
+    _reset_offline_abort()
+    prune_old_cache_dirs()
+
+    config = st.session_state.get('processing_config')
+    if config and config.get('polygon_coords'):
+        temp_dir = get_cache_dir_for_config(config)
+    elif st.session_state.current_temp_dir and os.path.exists(st.session_state.current_temp_dir):
+        temp_dir = st.session_state.current_temp_dir
+    else:
+        temp_dir = tempfile.mkdtemp()
+    st.session_state.current_temp_dir = temp_dir
 
     summary_placeholder = st.empty()
     download_summary = dict(st.session_state.download_summary)  # preserve any prior summary
@@ -822,12 +1148,20 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
 
     progress_bar = st.progress(0)
     stage_text = st.empty()
+    _NET_STATUS_SLOT = st.empty()
 
     def make_progress_callback(stage_label, unit_offset):
-        def _callback(done_in_stage, total_in_stage, month_name):
+        def _callback(done_in_stage, total_in_stage, month_name, is_retry=False):
             done_units = unit_offset + done_in_stage
             percent = int(min(1.0, done_units / total_units) * 100)
-            if month_name:
+            if month_name and is_retry:
+                # Made explicit so a re-attempt of an earlier month is never
+                # mistaken for the run "starting over".
+                stage_text.markdown(
+                    f"**{stage_label}** — تکمیل ماه‌های ناتمام: ماه «{month_name}» "
+                    f"({done_in_stage} از {total_in_stage} ماه انجام شده) — {percent}٪"
+                )
+            elif month_name:
                 stage_text.markdown(
                     f"**{stage_label}** — در حال پردازش ماه «{month_name}» "
                     f"({done_in_stage} از {total_in_stage}) — {percent}٪"
@@ -875,8 +1209,20 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             st.session_state.mean_data[PARAM_CHLOROPHYLL] = chl_mean
         download_summary[PARAM_CHLOROPHYLL] = (chl_downloaded, chl_available)
 
-    progress_bar.progress(1.0)
-    stage_text.markdown("✅ پردازش هر دو شاخص به پایان رسید — ۱۰۰٪")
+    if _OFFLINE_ABORT:
+        # Stopped early because the connection never came back. Everything that
+        # was downloaded is safe on disk and in session state.
+        stage_text.markdown(
+            "⛔ پایش به دلیل قطع اتصال اینترنت متوقف شد — "
+            "ماه‌های دریافت‌شده حفظ شده‌اند."
+        )
+        st.session_state.resume_after_interruption = True
+    else:
+        progress_bar.progress(1.0)
+        stage_text.markdown("✅ پردازش هر دو شاخص به پایان رسید — ۱۰۰٪")
+        _clear_net_status()
+
+    _NET_STATUS_SLOT = None
 
     st.session_state.download_summary = download_summary
 
@@ -2858,6 +3204,10 @@ def _render_status_strip():
             use_container_width=True,
             disabled=st.session_state.processing_in_progress,
         ):
+            # Also drop the on-disk cache for this run, so the next monitoring
+            # really is a fresh download rather than an instant cache replay.
+            clear_run_cache(st.session_state.current_temp_dir)
+
             st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
             st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
             st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
@@ -2867,11 +3217,184 @@ def _render_status_strip():
             st.session_state.processing_config = None
             st.session_state.processing_complete = False
             st.session_state.processing_in_progress = False
+            st.session_state.pending_run = None
             st.session_state.expert_analysis_json = None
             st.session_state.expert_analysis_signature = None
             st.session_state.expert_chat_history = []
             st.session_state.active_page = 'setup'
             st.rerun()
+
+
+# =============================================================================
+# Region-of-interest map
+# =============================================================================
+# The drawings made with the Leaflet Draw toolbar only live inside the browser
+# widget, so they vanished on the very next Streamlit rerun (for example right
+# after «ذخیره منطقه»). Every saved region — and the freshly drawn, not yet
+# saved one — is therefore re-added to the map as a real folium layer on every
+# run, which keeps the region permanently visible and lets the map be shown in
+# a read-only form while a monitoring run is in progress.
+# =============================================================================
+ROI_COLOR_SAVED = "#0E8E99"      # teal — a saved region
+ROI_COLOR_SELECTED = "#F5A524"   # amber — the region the run will use
+ROI_COLOR_DRAFT = "#E04B2F"      # red   — drawn but not saved yet
+
+
+def _st_folium_compat(fmap, **kwargs):
+    """
+    Call st_folium while staying compatible with older streamlit-folium
+    releases that do not support `key` / `returned_objects`. Limiting the
+    returned objects (when available) is what stops harmless panning and
+    zooming from triggering a full app rerun.
+    """
+    try:
+        supported = inspect.signature(st_folium).parameters
+    except Exception:
+        supported = {}
+    safe_kwargs = {k: v for k, v in kwargs.items() if not supported or k in supported}
+    return st_folium(fmap, **safe_kwargs)
+
+
+def _polygon_to_latlon(polygon):
+    """Shapely stores (lon, lat); folium wants (lat, lon)."""
+    return [(y, x) for x, y in polygon.exterior.coords]
+
+
+def _build_roi_map(interactive=True, highlight_index=None):
+    """Build the ROI map with every saved region drawn as a permanent layer."""
+    saved = list(st.session_state.drawn_polygons)
+    draft = st.session_state.last_drawn_polygon
+    draft_is_saved = draft is not None and any(p.equals(draft) for p in saved)
+
+    shapes = saved + ([draft] if (draft is not None and not draft_is_saved) else [])
+
+    if shapes:
+        xs_min = min(s.bounds[0] for s in shapes)
+        ys_min = min(s.bounds[1] for s in shapes)
+        xs_max = max(s.bounds[2] for s in shapes)
+        ys_max = max(s.bounds[3] for s in shapes)
+        center = [(ys_min + ys_max) / 2, (xs_min + xs_max) / 2]
+    else:
+        center = [35.6892, 51.3890]
+
+    fmap = folium.Map(location=center, zoom_start=8, control_scale=True)
+
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        attr='Google', name='تصویر ماهواره‌ای'
+    ).add_to(fmap)
+
+    if interactive:
+        plugins.Draw(export=True, position='topleft', draw_options={
+            'polyline': False, 'rectangle': True, 'polygon': True,
+            'circle': False, 'marker': False, 'circlemarker': False
+        }).add_to(fmap)
+
+    roi_layer = folium.FeatureGroup(name='مناطق انتخاب‌شده', show=True)
+
+    for i, polygon in enumerate(saved):
+        is_selected = (highlight_index is not None and i == highlight_index)
+        label = f"منطقه {i + 1}" + (" — انتخاب‌شده برای پایش" if is_selected else "")
+        folium.Polygon(
+            locations=_polygon_to_latlon(polygon),
+            color=ROI_COLOR_SELECTED if is_selected else ROI_COLOR_SAVED,
+            weight=5 if is_selected else 3,
+            opacity=0.95,
+            fill=True,
+            fill_color=ROI_COLOR_SELECTED if is_selected else ROI_COLOR_SAVED,
+            fill_opacity=0.22 if is_selected else 0.12,
+            tooltip=label,
+        ).add_to(roi_layer)
+
+    if draft is not None and not draft_is_saved:
+        folium.Polygon(
+            locations=_polygon_to_latlon(draft),
+            color=ROI_COLOR_DRAFT,
+            weight=3,
+            dash_array='8,6',
+            fill=True,
+            fill_color=ROI_COLOR_DRAFT,
+            fill_opacity=0.10,
+            tooltip='منطقه رسم‌شده (هنوز ذخیره نشده)',
+        ).add_to(roi_layer)
+
+    roi_layer.add_to(fmap)
+    folium.LayerControl(collapsed=True).add_to(fmap)
+
+    if shapes:
+        fmap.fit_bounds([[ys_min, xs_min], [ys_max, xs_max]], padding=(25, 25))
+
+    return fmap
+
+
+def _render_roi_map():
+    """
+    Render the map. During a monitoring run it stays on screen as a read-only
+    view (drawing tools removed, no interaction sent back to the server) instead
+    of being replaced by a placeholder message.
+    """
+    busy = st.session_state.processing_in_progress
+    highlight = st.session_state.selected_region_index if st.session_state.drawn_polygons else None
+
+    map_col_l, map_col_c, map_col_r = st.columns([1, 5, 1])
+
+    with map_col_c:
+        fmap = _build_roi_map(interactive=not busy, highlight_index=highlight)
+
+        if busy:
+            # returned_objects=[] -> the component never sends data back, so the
+            # map cannot trigger a rerun in the middle of the processing run.
+            _st_folium_compat(
+                fmap, key="roi_map_locked", width=700, height=500,
+                returned_objects=[],
+            )
+            st.caption("🔒 نقشه در حین پردازش فقط برای نمایش است؛ منطقه انتخاب‌شده با رنگ نارنجی مشخص شده است.")
+            return
+
+        map_data = _st_folium_compat(
+            fmap, key="roi_map", width=700, height=500,
+            returned_objects=["last_active_drawing"],
+        )
+
+        if map_data and map_data.get('last_active_drawing'):
+            geom = (map_data['last_active_drawing'] or {}).get('geometry', {}) or {}
+            if geom.get('type') == 'Polygon':
+                try:
+                    new_polygon = Polygon(geom['coordinates'][0])
+                except Exception:
+                    new_polygon = None
+                if new_polygon is not None and (
+                    st.session_state.last_drawn_polygon is None
+                    or not st.session_state.last_drawn_polygon.equals(new_polygon)
+                ):
+                    st.session_state.last_drawn_polygon = new_polygon
+                    st.rerun()   # redraw immediately as a permanent layer
+
+        if st.session_state.last_drawn_polygon is not None:
+            already_saved = any(
+                p.equals(st.session_state.last_drawn_polygon)
+                for p in st.session_state.drawn_polygons
+            )
+            if already_saved:
+                st.success("✅ منطقه انتخاب‌شده روی نقشه نمایش داده می‌شود.")
+            else:
+                st.info("✅ منطقه رسم شد (خط‌چین قرمز). برای نگه‌داشتن آن، «ذخیره منطقه» را بزنید.")
+
+        if st.button("💾 ذخیره منطقه", use_container_width=True):
+            if st.session_state.last_drawn_polygon:
+                is_duplicate = any(
+                    existing.equals(st.session_state.last_drawn_polygon)
+                    for existing in st.session_state.drawn_polygons
+                )
+                if not is_duplicate:
+                    st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
+                    st.session_state.selected_region_index = len(st.session_state.drawn_polygons) - 1
+                    st.success("✅ منطقه ذخیره شد!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ این منطقه قبلاً ذخیره شده است")
+            else:
+                st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
 
 
 # =============================================================================
@@ -2883,44 +3406,7 @@ def render_setup_page():
     # ==========================================================================
     _render_step_header(1, "🗺️", "انتخاب منطقه مورد نظر (بدنه آبی)")
 
-    if not st.session_state.processing_in_progress:
-        map_col_l, map_col_c, map_col_r = st.columns([1, 5, 1])
-        with map_col_c:
-            m = folium.Map(location=[35.6892, 51.3890], zoom_start=8)
-            plugins.Draw(export=True, position='topleft', draw_options={
-                'polyline': False, 'rectangle': True, 'polygon': True,
-                'circle': False, 'marker': False, 'circlemarker': False
-            }).add_to(m)
-            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-                            attr='Google', name='Satellite').add_to(m)
-            folium.LayerControl().add_to(m)
-
-            map_data = st_folium(m, width=700, height=500)
-
-            if map_data and map_data.get('last_active_drawing'):
-                geom = map_data['last_active_drawing'].get('geometry', {})
-                if geom.get('type') == 'Polygon':
-                    st.session_state.last_drawn_polygon = Polygon(geom['coordinates'][0])
-                    st.success("✅ منطقه انتخاب شد")
-
-            if st.button("💾 ذخیره منطقه", use_container_width=True):
-                if st.session_state.last_drawn_polygon:
-                    is_duplicate = False
-                    for existing in st.session_state.drawn_polygons:
-                        if existing.equals(st.session_state.last_drawn_polygon):
-                            is_duplicate = True
-                            break
-
-                    if not is_duplicate:
-                        st.session_state.drawn_polygons.append(st.session_state.last_drawn_polygon)
-                        st.success("✅ منطقه ذخیره شد!")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ این منطقه قبلاً ذخیره شده است")
-                else:
-                    st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
-    else:
-        st.info("🔒 نقشه در حین پردازش قفل است")
+    _render_roi_map()
 
     if st.session_state.drawn_polygons:
         st.subheader("📍 مناطق ذخیره‌شده")
@@ -2995,12 +3481,24 @@ def render_setup_page():
     )
 
     # Show Resume button only when a previous interrupted run exists
+    # A resume is possible whenever a run has been configured — either because
+    # months are still held in session state, or because the deterministic cache
+    # folder for that configuration already holds downloaded GeoTIFFs (which is
+    # what makes a resume work even after the session itself was lost).
     has_partial_cache = (
         bool(st.session_state.downloaded_months.get(PARAM_TURBIDITY)) or
         bool(st.session_state.downloaded_months.get(PARAM_CHLOROPHYLL)) or
         bool(st.session_state.month_statuses.get(PARAM_TURBIDITY)) or
         bool(st.session_state.month_statuses.get(PARAM_CHLOROPHYLL))
     )
+    if not has_partial_cache and st.session_state.processing_config is not None:
+        try:
+            cache_dir = get_cache_dir_for_config(st.session_state.processing_config)
+            has_partial_cache = any(
+                name.endswith('.tif') for name in os.listdir(cache_dir)
+            )
+        except Exception:
+            has_partial_cache = False
     resume_btn = btn_col2.button(
         "🔄 ادامه از محل قطع",
         disabled=(
@@ -3030,19 +3528,24 @@ def render_setup_page():
         and st.session_state.processing_config is not None
     )
 
-    # --- Fresh start ---
+    # --- A click only ARMS the run; the work happens on the next script run ---
+    # Doing it this way means the whole page (map included) is already rendered
+    # in its locked, read-only state before the long download loop begins — the
+    # map therefore stays visible for the entire run and can no longer trigger a
+    # rerun that would abort the processing halfway through.
     if start_btn:
         st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
         st.session_state.mean_data = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
         st.session_state.download_summary = {}
-        st.session_state.current_temp_dir = None
         st.session_state.processing_complete = False
         st.session_state.processing_in_progress = True
         st.session_state.resume_after_interruption = False
+        st.session_state.pending_run = 'start'
 
-        # FIX E: Persist processing config so Resume can reconstruct the AOI and params
+        # Persist processing config so Resume (and the cache folder lookup) can
+        # reconstruct the AOI and parameters later.
         st.session_state.processing_config = {
             'polygon_coords': list(selected_polygon.exterior.coords),
             'start_date': start.strftime('%Y-%m-%d'),
@@ -3050,39 +3553,35 @@ def render_setup_page():
             'cloudy_pixel_percentage': CLOUD_THRESHOLD,
             'scale': 10,
         }
+        # The cache folder is derived from that config; any month already on
+        # disk from an earlier attempt at the very same region + dates is reused
+        # instead of being downloaded again.
+        st.session_state.current_temp_dir = get_cache_dir_for_config(
+            st.session_state.processing_config
+        )
+        st.rerun()
 
-        aoi = ee.Geometry.Polygon([list(selected_polygon.exterior.coords)])
+    if resume_btn and st.session_state.processing_config is not None:
+        st.session_state.processing_in_progress = True
+        st.session_state.resume_after_interruption = False
+        st.session_state.pending_run = 'resume'
+        st.rerun()
 
-        try:
-            success = run_full_analysis(
-                aoi,
-                start.strftime('%Y-%m-%d'),
-                end.strftime('%Y-%m-%d'),
-                CLOUD_THRESHOLD,
-                10,
-                resume=False
-            )
-            st.session_state.processing_complete = success
-            if not success:
-                st.warning("⚠️ داده‌ای برای این منطقه و بازه زمانی یافت نشد.")
-        except Exception:
-            # FIX F: On error, flag that a resume is possible instead of losing progress
-            st.session_state.resume_after_interruption = True
-            st.error(
-                "متأسفانه اتصال قطع شد یا خطایی رخ داد. "
-                "پس از برقراری اتصال، دکمه «ادامه از محل قطع» را فشار دهید."
-            )
-        finally:
-            st.session_state.processing_in_progress = False
-            st.rerun()
+    # --- Execute the armed run (fresh start, manual resume, or auto-resume) ---
+    pending = st.session_state.get('pending_run')
 
-    # --- Resume after interruption (manual click or automatic) ---
-    if (resume_btn or auto_continue) and st.session_state.processing_config is not None:
+    if (pending or auto_continue) and st.session_state.processing_config is not None:
         config = st.session_state.processing_config
+        # A fresh start still resumes from the on-disk cache: if the same region
+        # and date range were already (partly) downloaded, those months are
+        # picked up instantly rather than fetched a second time.
+        is_fresh = (pending == 'start')
+
+        st.session_state.pending_run = None
         st.session_state.processing_in_progress = True
         st.session_state.resume_after_interruption = False
 
-        if auto_continue:
+        if auto_continue and not pending:
             st.info("🔄 اتصال اینترنت قطع شده بود؛ پایش از همان جا به‌طور خودکار ادامه می‌یابد...")
 
         aoi = ee.Geometry.Polygon([config['polygon_coords']])
@@ -3094,21 +3593,25 @@ def render_setup_page():
                 config['end_date'],
                 config.get('cloudy_pixel_percentage', CLOUD_THRESHOLD),
                 config.get('scale', 10),
-                resume=True   # FIX G: pass resume=True to skip already-cached months
+                resume=True   # always reuse whatever is already cached
             )
-            # Merge with previously completed results still in session state
             has_any = (
                 bool(st.session_state.results.get(PARAM_TURBIDITY)) or
                 bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
             )
-            if has_any:
-                st.session_state.processing_complete = True
+            st.session_state.processing_complete = bool(success or has_any)
             if not success and not has_any:
                 st.warning("⚠️ داده‌ای برای این منطقه و بازه زمانی یافت نشد.")
         except Exception:
+            # Nothing downloaded so far is lost — everything is on disk and in
+            # session state, so a resume continues from the exact same month.
             st.session_state.resume_after_interruption = True
             st.error(
-                "اتصال مجدداً قطع شد. لطفاً دوباره تلاش کنید."
+                "متأسفانه اتصال قطع شد یا خطایی رخ داد. "
+                "پس از برقراری اتصال، دکمه «ادامه از محل قطع» را فشار دهید — "
+                "ماه‌های دریافت‌شده دوباره دانلود نمی‌شوند."
+                if is_fresh else
+                "اتصال مجدداً قطع شد. لطفاً دوباره «ادامه از محل قطع» را بزنید."
             )
         finally:
             st.session_state.processing_in_progress = False
@@ -3174,6 +3677,12 @@ def main():
     if not ee_ok:
         st.error(ee_msg)
         st.stop()
+
+    # Safety valve: a run can never be "in progress" without a configuration to
+    # run — otherwise every button would stay disabled forever.
+    if st.session_state.processing_in_progress and st.session_state.processing_config is None \
+            and not st.session_state.get('pending_run'):
+        st.session_state.processing_in_progress = False
 
     # While a run is in progress the app always stays on the first page, so the
     # progress bar and the resume logic remain visible to the user.
