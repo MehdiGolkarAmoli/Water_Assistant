@@ -2921,6 +2921,70 @@ def _polygon_to_latlon(polygon):
     return [(y, x) for x, y in polygon.exterior.coords]
 
 
+def polygon_area_km2(polygon):
+    """
+    Approximate area of a lat/lon polygon in square kilometres.
+
+    One degree of latitude is ~110.57 km everywhere, but one degree of
+    longitude shrinks towards the poles, so the polygon's own mid-latitude is
+    used to scale it. (The previous `area * 111 * 111` ignored that and
+    overestimated by roughly 20% at Iran's latitudes.)
+    """
+    try:
+        min_lat = polygon.bounds[1]
+        max_lat = polygon.bounds[3]
+        mean_lat = math.radians((min_lat + max_lat) / 2.0)
+        km_per_deg_lat = 110.574
+        km_per_deg_lon = 111.320 * math.cos(mean_lat)
+        return abs(polygon.area) * km_per_deg_lat * km_per_deg_lon
+    except Exception:
+        return 0.0
+
+
+def _format_area_km2(area_km2):
+    """Readable area text — more decimals for small regions."""
+    if area_km2 >= 100:
+        return f"{area_km2:,.0f} کیلومتر مربع"
+    if area_km2 >= 10:
+        return f"{area_km2:.1f} کیلومتر مربع"
+    return f"{area_km2:.2f} کیلومتر مربع"
+
+
+def _add_area_label(layer, polygon, text, color):
+    """
+    Small floating badge placed just below the polygon showing its area, so the
+    user gets an immediate sense of how large the selected region is.
+
+    The badge lives inside the map's own iframe, where the app's stylesheet does
+    not reach — hence the inline styling.
+    """
+    try:
+        min_lon, min_lat, max_lon, max_lat = polygon.bounds
+        anchor_lat = min_lat
+        anchor_lon = (min_lon + max_lon) / 2.0
+    except Exception:
+        return
+
+    html = (
+        f'<div style="'
+        f'display:inline-block; white-space:nowrap; direction:rtl;'
+        f'background:rgba(255,255,255,0.94); color:#0A3F4A;'
+        f'border:2px solid {color}; border-left:none; border-right:none;'
+        f'border-top:3px solid {color}; border-bottom:3px solid {color};'
+        f'border-radius:999px; padding:3px 10px;'
+        f'font-family:\'B Nazanin\',\'BNazanin\',\'Vazirmatn\',Tahoma,sans-serif;'
+        f'font-size:13px; font-weight:700; line-height:1.6;'
+        f'box-shadow:0 2px 6px rgba(10,63,74,0.35);'
+        f'transform:translateX(-50%);'
+        f'">{text}</div>'
+    )
+
+    folium.Marker(
+        location=[anchor_lat, anchor_lon],
+        icon=folium.DivIcon(html=html, icon_size=(0, 0), icon_anchor=(0, -6)),
+    ).add_to(layer)
+
+
 def _build_roi_map(interactive=True, highlight_index=None):
     """Build the ROI map with every saved region drawn as a permanent layer."""
     saved = list(st.session_state.drawn_polygons)
@@ -2946,28 +3010,43 @@ def _build_roi_map(interactive=True, highlight_index=None):
     ).add_to(fmap)
 
     if interactive:
-        plugins.Draw(export=True, position='topleft', draw_options={
-            'polyline': False, 'rectangle': True, 'polygon': True,
-            'circle': False, 'marker': False, 'circlemarker': False
-        }).add_to(fmap)
+        # Only the two drawing tools are shown. The plugin's own edit/delete
+        # toolbar and its Export button are switched off: they act on the
+        # browser-side layer only, so they never matched what the app actually
+        # had stored and were a source of confusion. Deleting a region is done
+        # with the 🗑️ button in «مناطق ذخیره‌شده» (saved regions) and with
+        # «حذف منطقه رسم‌شده» (a region drawn but not yet saved).
+        plugins.Draw(
+            export=False,
+            position='topleft',
+            draw_options={
+                'polyline': False, 'rectangle': True, 'polygon': True,
+                'circle': False, 'marker': False, 'circlemarker': False,
+            },
+            edit_options={'edit': False, 'remove': False},
+        ).add_to(fmap)
 
     roi_layer = folium.FeatureGroup(name='مناطق انتخاب‌شده', show=True)
 
     for i, polygon in enumerate(saved):
         is_selected = (highlight_index is not None and i == highlight_index)
+        color = ROI_COLOR_SELECTED if is_selected else ROI_COLOR_SAVED
+        area_text = _format_area_km2(polygon_area_km2(polygon))
         label = f"منطقه {i + 1}" + (" — انتخاب‌شده برای پایش" if is_selected else "")
         folium.Polygon(
             locations=_polygon_to_latlon(polygon),
-            color=ROI_COLOR_SELECTED if is_selected else ROI_COLOR_SAVED,
+            color=color,
             weight=5 if is_selected else 3,
             opacity=0.95,
             fill=True,
-            fill_color=ROI_COLOR_SELECTED if is_selected else ROI_COLOR_SAVED,
+            fill_color=color,
             fill_opacity=0.22 if is_selected else 0.12,
-            tooltip=label,
+            tooltip=f"{label} — {area_text}",
         ).add_to(roi_layer)
+        _add_area_label(roi_layer, polygon, f"منطقه {i + 1} • {area_text}", color)
 
     if draft is not None and not draft_is_saved:
+        draft_area_text = _format_area_km2(polygon_area_km2(draft))
         folium.Polygon(
             locations=_polygon_to_latlon(draft),
             color=ROI_COLOR_DRAFT,
@@ -2976,8 +3055,11 @@ def _build_roi_map(interactive=True, highlight_index=None):
             fill=True,
             fill_color=ROI_COLOR_DRAFT,
             fill_opacity=0.10,
-            tooltip='منطقه رسم‌شده (هنوز ذخیره نشده)',
+            tooltip=f"منطقه رسم‌شده (ذخیره‌نشده) — {draft_area_text}",
         ).add_to(roi_layer)
+        _add_area_label(
+            roi_layer, draft, f"منطقه جدید • {draft_area_text}", ROI_COLOR_DRAFT
+        )
 
     roi_layer.add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
@@ -3040,18 +3122,30 @@ def _render_roi_map():
                 p.equals(st.session_state.last_drawn_polygon)
                 for p in st.session_state.drawn_polygons
             )
-            if already_saved:
-                st.success("✅ منطقه انتخاب‌شده روی نقشه نمایش داده می‌شود.")
-            else:
-                st.info("✅ منطقه رسم شد (خط‌چین قرمز). برای نگه‌داشتن آن، «ذخیره منطقه» را بزنید.")
-
         has_unsaved_draft = (
             st.session_state.last_drawn_polygon is not None
             and not any(p.equals(st.session_state.last_drawn_polygon)
                         for p in st.session_state.drawn_polygons)
         )
 
-        save_col, discard_col = st.columns([3, 1])
+        if st.session_state.last_drawn_polygon is not None:
+            draft_area = _format_area_km2(
+                polygon_area_km2(st.session_state.last_drawn_polygon)
+            )
+            if has_unsaved_draft:
+                st.info(
+                    f"✅ منطقه رسم شد (خط‌چین قرمز) — مساحت تقریبی: **{draft_area}**. "
+                    "برای نگه‌داشتن آن، «ذخیره منطقه» را بزنید."
+                )
+            else:
+                st.success("✅ منطقه انتخاب‌شده روی نقشه نمایش داده می‌شود.")
+
+        # The discard button only appears while there is something to discard,
+        # so there is never an inactive delete control on screen.
+        if has_unsaved_draft:
+            save_col, discard_col = st.columns([3, 1])
+        else:
+            save_col, discard_col = st.container(), None
 
         if save_col.button("💾 ذخیره منطقه", use_container_width=True):
             if st.session_state.last_drawn_polygon:
@@ -3070,12 +3164,11 @@ def _render_roi_map():
             else:
                 st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
 
-        # Lets the user drop a region drawn by mistake without saving it first.
-        if discard_col.button(
-            "✖️ حذف رسم",
+        # Removes a region that was drawn by mistake and never saved.
+        if discard_col is not None and discard_col.button(
+            "✖️ حذف منطقه رسم‌شده",
             use_container_width=True,
-            disabled=not has_unsaved_draft,
-            help="حذف منطقه‌ای که رسم شده اما ذخیره نشده است",
+            help="منطقه‌ای که رسم شده اما ذخیره نشده است را از نقشه بردارید",
         ):
             st.session_state.last_drawn_polygon = None
             st.session_state.map_version += 1
@@ -3098,7 +3191,7 @@ def render_setup_page():
         for i, p in enumerate(st.session_state.drawn_polygons):
             c1, c2, c3 = st.columns([3, 1, 1])
             centroid = p.centroid
-            c1.write(f"**منطقه {i+1}**: ~{p.area * 111 * 111:.2f} کیلومتر مربع")
+            c1.write(f"**منطقه {i+1}**: ~{_format_area_km2(polygon_area_km2(p))}")
             c2.write(f"مرکز: ({centroid.y:.4f}, {centroid.x:.4f})")
             if c3.button("🗑️", key=f"del_{i}", disabled=st.session_state.processing_in_progress):
                 removed = st.session_state.drawn_polygons.pop(i)
@@ -3141,8 +3234,7 @@ def render_setup_page():
     if st.session_state.drawn_polygons:
         region_options = []
         for i, p in enumerate(st.session_state.drawn_polygons):
-            area = p.area * 111 * 111
-            region_options.append(f"منطقه {i+1} (~{area:.2f} کیلومتر مربع)")
+            region_options.append(f"منطقه {i+1} (~{_format_area_km2(polygon_area_km2(p))})")
 
         if st.session_state.selected_region_index >= len(st.session_state.drawn_polygons):
             st.session_state.selected_region_index = 0
