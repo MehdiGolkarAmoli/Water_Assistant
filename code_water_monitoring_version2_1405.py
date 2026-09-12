@@ -48,6 +48,16 @@ import folium
 from folium import plugins
 from streamlit_folium import st_folium
 
+# branca + jinja2 are folium's own dependencies; they are used to inject the
+# small piece of JavaScript that shows the live area while a region is being
+# drawn. If they are ever unavailable the app simply runs without that label.
+try:
+    from branca.element import MacroElement as _BrancaMacroElement
+    from jinja2 import Template as _JinjaTemplate
+    _LIVE_AREA_SUPPORTED = True
+except Exception:
+    _LIVE_AREA_SUPPORTED = False
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -2950,6 +2960,161 @@ def _format_area_km2(area_km2):
     return f"{area_km2:.2f} کیلومتر مربع"
 
 
+# =============================================================================
+# Live area readout while the user is drawing
+# =============================================================================
+# Leaflet.draw knows the shape being drawn long before the user finishes it, so
+# a small badge is pinned under the bounding box of the in-progress shape and
+# updated on every mouse move. The area itself comes from Leaflet.draw's own
+# L.GeometryUtil.geodesicArea(), i.e. a proper geodesic area on the ellipsoid —
+# not a degree-square approximation.
+#
+# Everything is wrapped in try/catch: if a future Leaflet.draw release renames
+# an internal, the badge silently disappears and drawing keeps working.
+_LIVE_AREA_JS = """
+{% macro script(this, kwargs) %}
+(function () {
+  try {
+    var map = {{ this._parent.get_name() }};
+    if (!map || typeof L === 'undefined' || !L.Draw || !L.GeometryUtil) { return; }
+
+    var label = L.DomUtil.create('div', '', map.getContainer());
+    label.style.cssText = [
+      'position:absolute',
+      'z-index:650',
+      'display:none',
+      'pointer-events:none',
+      'white-space:nowrap',
+      'direction:rtl',
+      'transform:translateX(-50%)',
+      'background:rgba(255,255,255,0.96)',
+      'color:#0A3F4A',
+      'border-top:3px solid #E04B2F',
+      'border-bottom:3px solid #E04B2F',
+      'border-radius:999px',
+      'padding:4px 14px',
+      "font-family:'B Nazanin','BNazanin','Vazirmatn',Tahoma,sans-serif",
+      'font-size:14px',
+      'font-weight:700',
+      'box-shadow:0 3px 10px rgba(10,63,74,0.40)'
+    ].join(';');
+
+    var lastPts = null;
+
+    function formatArea(m2) {
+      var km2 = m2 / 1000000.0;
+      if (km2 >= 100) { return km2.toFixed(0) + ' کیلومتر مربع'; }
+      if (km2 >= 10) { return km2.toFixed(1) + ' کیلومتر مربع'; }
+      if (km2 >= 0.01) { return km2.toFixed(2) + ' کیلومتر مربع'; }
+      return Math.round(m2) + ' متر مربع';
+    }
+
+    function hideLabel() {
+      label.style.display = 'none';
+      lastPts = null;
+    }
+
+    function placeLabel(pts) {
+      if (!pts || pts.length < 3) { label.style.display = 'none'; return; }
+      var area;
+      try {
+        area = L.GeometryUtil.geodesicArea(pts);
+      } catch (err) {
+        label.style.display = 'none';
+        return;
+      }
+      if (!isFinite(area) || area <= 0) { label.style.display = 'none'; return; }
+
+      var bounds = L.latLngBounds(pts);
+      var anchor = L.latLng(bounds.getSouth(), bounds.getCenter().lng);
+      var pt = map.latLngToContainerPoint(anchor);
+
+      label.innerHTML = 'مساحت: ' + formatArea(area);
+      label.style.left = pt.x + 'px';
+      label.style.top = (pt.y + 10) + 'px';
+      label.style.display = 'block';
+      lastPts = pts;
+    }
+
+    function activeDrawer() {
+      return window.__wqActiveDrawer || null;
+    }
+
+    function currentPoints(cursor) {
+      var drawer = activeDrawer();
+      if (!drawer) { return null; }
+      try {
+        // Rectangle / simple shapes keep the in-progress geometry in _shape
+        if (drawer._shape && drawer._shape.getLatLngs) {
+          var rect = drawer._shape.getLatLngs();
+          if (rect && rect[0] && rect[0].length !== undefined) { return rect[0]; }
+          return rect;
+        }
+        // Polygons keep the confirmed vertices in _poly; the cursor is the
+        // vertex the user has not clicked yet.
+        if (drawer._poly && drawer._poly.getLatLngs) {
+          var ll = drawer._poly.getLatLngs();
+          if (ll && ll.length && ll[0] && ll[0].length !== undefined) { ll = ll[0]; }
+          var pts = (ll || []).slice();
+          if (cursor) { pts.push(cursor); }
+          return pts;
+        }
+      } catch (err) {
+        return null;
+      }
+      return null;
+    }
+
+    // Remember which draw handler is currently enabled. Patched once per page.
+    if (L.Draw.Feature && !L.Draw.Feature.prototype.__wqAreaPatched) {
+      var originalEnable = L.Draw.Feature.prototype.enable;
+      var originalDisable = L.Draw.Feature.prototype.disable;
+      L.Draw.Feature.prototype.enable = function () {
+        window.__wqActiveDrawer = this;
+        return originalEnable.apply(this, arguments);
+      };
+      L.Draw.Feature.prototype.disable = function () {
+        window.__wqActiveDrawer = null;
+        return originalDisable.apply(this, arguments);
+      };
+      L.Draw.Feature.prototype.__wqAreaPatched = true;
+    }
+
+    map.on('mousemove', function (e) {
+      if (!activeDrawer()) { return; }
+      placeLabel(currentPoints(e.latlng));
+    });
+
+    map.on('draw:drawvertex', function () {
+      if (activeDrawer()) { placeLabel(currentPoints(null)); }
+    });
+
+    map.on('draw:drawstop', hideLabel);
+    map.on('draw:created', hideLabel);
+
+    // Keep the badge glued to the shape while the map is panned or zoomed
+    map.on('move', function () { if (lastPts) { placeLabel(lastPts); } });
+    map.on('zoom', function () { if (lastPts) { placeLabel(lastPts); } });
+  } catch (err) {
+    // Never let a UI nicety break the map
+  }
+})();
+{% endmacro %}
+"""
+
+
+if _LIVE_AREA_SUPPORTED:
+    class LiveAreaLabel(_BrancaMacroElement):
+        """Folium element that injects the live-area script into the map."""
+        _template = _JinjaTemplate(_LIVE_AREA_JS)
+
+        def __init__(self):
+            super().__init__()
+            self._name = "LiveAreaLabel"
+else:
+    LiveAreaLabel = None
+
+
 def _add_area_label(layer, polygon, text, color):
     """
     Small floating badge placed just below the polygon showing its area, so the
@@ -3025,6 +3190,13 @@ def _build_roi_map(interactive=True, highlight_index=None):
             },
             edit_options={'edit': False, 'remove': False},
         ).add_to(fmap)
+
+        # Live area readout that follows the shape as it is being drawn
+        if LiveAreaLabel is not None:
+            try:
+                fmap.add_child(LiveAreaLabel())
+            except Exception:
+                pass
 
     roi_layer = folium.FeatureGroup(name='مناطق انتخاب‌شده', show=True)
 
