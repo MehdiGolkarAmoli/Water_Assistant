@@ -30,6 +30,8 @@ import warnings
 import base64
 import json
 import inspect
+import hashlib
+import shutil
 from datetime import date
 from PIL import Image
 
@@ -173,6 +175,30 @@ DOWNLOAD_TIMEOUT = 120
 CHUNK_SIZE = 8192
 MIN_FILE_SIZE = 10000
 
+# --- Connection-loss handling -------------------------------------------------
+# When the internet drops, an Earth Engine call does not hang: it raises almost
+# instantly. The month loop used to catch that, mark the month as "failed" and
+# move straight on to the next month — so a short outage burned through every
+# remaining month in a couple of seconds, marking them all failed. A later
+# Resume then legitimately retried all of them, starting from the earliest,
+# which is exactly what looked like "the download went back to an earlier month
+# / started over".
+#
+# The fix is to recognise the outage and STOP: after this many consecutive
+# month failures the run halts immediately, leaving every month that was never
+# attempted completely untouched, so Resume continues from the exact point of
+# interruption instead of re-doing a long stretch of months.
+NETWORK_FAILURE_STREAK = 2
+
+# --- Session-independent download cache ---------------------------------------
+# The downloaded GeoTIFFs live in a folder whose name is derived from the run
+# itself (region + dates + settings), not from a random tempfile name. That way
+# the exact same run always maps to the same folder and can be resumed even if
+# the Streamlit session was lost entirely (dropped websocket, page reload).
+CACHE_ROOT_NAME = "wq_monitor_cache"
+RUN_CONFIG_FILE = "run_config.json"
+CACHE_MAX_AGE_DAYS = 14
+
 # Status constants
 STATUS_NO_DATA = "no_data"
 STATUS_COMPLETE = "complete"
@@ -214,6 +240,13 @@ if 'download_summary' not in st.session_state:
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
+if 'connection_interrupted' not in st.session_state:
+    # Set by the processing loop when the link to Earth Engine drops, so the
+    # run stops at that point instead of failing every remaining month
+    st.session_state.connection_interrupted = False
+if 'recovered_run_checked' not in st.session_state:
+    # An unfinished run left on disk is looked for once per session
+    st.session_state.recovered_run_checked = False
 if 'cdom_display_range' not in st.session_state:
     # (vmin, vmax) colour range derived from the CDOM data of the current run
     st.session_state.cdom_display_range = None
@@ -271,6 +304,147 @@ def initialize_earth_engine():
 # =============================================================================
 def get_utm_zone(longitude):
     return math.floor((longitude + 180) / 6) + 1
+
+
+# -----------------------------------------------------------------------------
+# Persistent download cache
+# -----------------------------------------------------------------------------
+def _cache_root():
+    """First writable location for the cache folder (never raises)."""
+    candidates = [
+        os.path.join(tempfile.gettempdir(), CACHE_ROOT_NAME),
+        os.path.join(os.path.expanduser("~"), "." + CACHE_ROOT_NAME),
+    ]
+    try:
+        candidates.append(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "." + CACHE_ROOT_NAME)
+        )
+    except Exception:
+        pass
+
+    for folder in candidates:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            probe = os.path.join(folder, ".write_test")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+            return folder
+        except Exception:
+            continue
+    return tempfile.mkdtemp()
+
+
+def get_cache_dir_for_config(config):
+    """
+    Deterministic cache folder for one monitoring run: the same region + date
+    range + settings always resolve to the same folder, so a resume finds the
+    months that were already downloaded instead of starting over.
+    """
+    try:
+        payload = {
+            'coords': [[round(float(x), 6), round(float(y), 6)] for x, y in config['polygon_coords']],
+            'start': config['start_date'],
+            'end': config['end_date'],
+            'scale': config.get('scale', 10),
+            'cloud': config.get('cloudy_pixel_percentage', CLOUD_THRESHOLD),
+        }
+        key = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
+    except Exception:
+        key = "default"
+
+    folder = os.path.join(_cache_root(), key)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        return tempfile.mkdtemp()
+    return folder
+
+
+def save_run_config(cache_dir, config):
+    """
+    Store the run's configuration next to its downloaded files.
+
+    This is what makes a resume possible after the Streamlit session itself is
+    gone: on the next load the app finds this file, restores the configuration,
+    and the «ادامه از محل قطع» button works again.
+    """
+    try:
+        with open(os.path.join(cache_dir, RUN_CONFIG_FILE), 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def find_resumable_run():
+    """
+    Return (config, cache_dir) of the most recent unfinished run found on disk,
+    or (None, None). Only runs that actually have downloaded images count.
+    """
+    root = _cache_root()
+    best = None
+    try:
+        for name in os.listdir(root):
+            folder = os.path.join(root, name)
+            config_path = os.path.join(folder, RUN_CONFIG_FILE)
+            if not os.path.isdir(folder) or not os.path.isfile(config_path):
+                continue
+            if not any(f.endswith('.tif') for f in os.listdir(folder)):
+                continue
+            mtime = os.path.getmtime(folder)
+            if best is None or mtime > best[0]:
+                best = (mtime, folder, config_path)
+    except Exception:
+        return None, None
+
+    if best is None:
+        return None, None
+
+    try:
+        with open(best[2], 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        if not config.get('polygon_coords'):
+            return None, None
+        config['polygon_coords'] = [tuple(c) for c in config['polygon_coords']]
+        return config, best[1]
+    except Exception:
+        return None, None
+
+
+def reset_run_cache(cache_dir):
+    """Empty a run's cache folder — used when the user starts a FRESH run."""
+    try:
+        if not cache_dir or not os.path.isdir(cache_dir):
+            return
+        if _cache_root() not in os.path.abspath(cache_dir):
+            return  # never touch anything outside our own cache root
+        for name in os.listdir(cache_dir):
+            path = os.path.join(cache_dir, name)
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    os.remove(path)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def prune_old_cache_dirs(max_age_days=CACHE_MAX_AGE_DAYS):
+    """Delete run folders nobody has touched for a fortnight."""
+    root = _cache_root()
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        for name in os.listdir(root):
+            folder = os.path.join(root, name)
+            try:
+                if os.path.isdir(folder) and os.path.getmtime(folder) < cutoff:
+                    shutil.rmtree(folder, ignore_errors=True)
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def validate_geotiff_file(file_path, expected_bands=1):
@@ -523,6 +697,20 @@ def get_monthly_composite(wq_collection, aoi, year, month):
 # =============================================================================
 def download_band_with_retry(image, band, aoi, output_path, scale=10):
     """Download a single band with retry mechanism."""
+    # --- Cache check FIRST, before any network call ---------------------------
+    # A band already on disk must cost nothing. The old order asked Earth Engine
+    # for the AOI bounds before looking at the cache, so every resume paid for a
+    # round trip per band — and, with no connection, that call failed and the
+    # month was discarded even though its files were sitting right there.
+    if os.path.exists(output_path):
+        is_valid, msg = validate_geotiff_file(output_path, expected_bands=1)
+        if is_valid:
+            return True, "cached"
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+
     try:
         region = aoi.bounds().getInfo()['coordinates']
     except Exception as e:
@@ -531,12 +719,6 @@ def download_band_with_retry(image, band, aoi, output_path, scale=10):
     temp_path = output_path + '.tmp'
     if os.path.exists(temp_path):
         os.remove(temp_path)
-
-    if os.path.exists(output_path):
-        is_valid, msg = validate_geotiff_file(output_path, expected_bands=1)
-        if is_valid:
-            return True, "cached"
-        os.remove(output_path)
 
     last_error = None
 
@@ -885,10 +1067,13 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
                 'status': STATUS_COMPLETE, 'message': 'Cached (disk)'
             }
 
-    # Months not yet downloaded (skip ones already done or already statused as no-data)
+    # Months not yet downloaded. Only STATUS_NO_DATA counts as settled from the
+    # status alone; a month marked STATUS_COMPLETE is skipped because its files
+    # were just validated into downloaded_months above — relying on the status
+    # by itself meant a month whose files had gone missing was skipped forever.
     already_statused = {
         m for m, s in st.session_state.month_statuses[parameter_type].items()
-        if s.get('status') in (STATUS_NO_DATA, STATUS_COMPLETE)
+        if s.get('status') == STATUS_NO_DATA
     }
     months_to_process = [
         m for m in month_infos
@@ -908,7 +1093,16 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
 
     # ------------------------------------------------------------------
     # FIX B: Per-month EE + download loop with immediate session state writes
+    #
+    # A month that fails when the connection is gone fails INSTANTLY (Earth
+    # Engine raises straight away rather than hanging). Counting consecutive
+    # failures therefore tells us the link is down within a second or two, and
+    # the loop stops there instead of racing through — and failing — every
+    # remaining month. Months never attempted keep no status at all, so a
+    # resume picks up at the exact point of interruption.
     # ------------------------------------------------------------------
+    consecutive_failures = 0
+
     for month_info in months_to_process:
         month_name = month_info['month_name']
 
@@ -925,12 +1119,18 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             processed_count += 1
             if progress_callback:
                 progress_callback(processed_count, total_months, month_name)
+
+            consecutive_failures += 1
+            if consecutive_failures >= NETWORK_FAILURE_STREAK:
+                st.session_state.connection_interrupted = True
+                break
             continue
 
         if composite is None or count == 0:
             st.session_state.month_statuses[parameter_type][month_name] = {
                 'status': STATUS_NO_DATA, 'message': 'No images'
             }
+            consecutive_failures = 0   # the server answered: the link is fine
             processed_count += 1
             if progress_callback:
                 progress_callback(processed_count, total_months, month_name)
@@ -953,10 +1153,17 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             st.session_state.downloaded_months[parameter_type][month_name] = {
                 'wq_index': wq_path, 'rgb': rgb_path
             }
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
 
         processed_count += 1
         if progress_callback:
             progress_callback(processed_count, total_months, month_name)
+
+        if consecutive_failures >= NETWORK_FAILURE_STREAK:
+            st.session_state.connection_interrupted = True
+            break
 
     # ------------------------------------------------------------------
     # Thumbnail generation (uses only successfully downloaded months)
@@ -1000,9 +1207,23 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
     - processing_config is written to session state here so the main() button
       handler can pass it to a resume run later.
     """
-    if st.session_state.current_temp_dir is None or not os.path.exists(st.session_state.current_temp_dir):
-        st.session_state.current_temp_dir = tempfile.mkdtemp()
-    temp_dir = st.session_state.current_temp_dir
+    st.session_state.connection_interrupted = False
+    prune_old_cache_dirs()
+
+    # Cache folder for this exact run (see get_cache_dir_for_config): the same
+    # region + date range always maps to the same folder, so months already on
+    # disk are reused instead of downloaded twice — even after the session was
+    # lost. The run's configuration is stored beside the images so the app can
+    # offer to resume it on a completely fresh session.
+    config = st.session_state.get('processing_config')
+    if config and config.get('polygon_coords'):
+        temp_dir = get_cache_dir_for_config(config)
+        save_run_config(temp_dir, config)
+    elif st.session_state.current_temp_dir and os.path.exists(st.session_state.current_temp_dir):
+        temp_dir = st.session_state.current_temp_dir
+    else:
+        temp_dir = tempfile.mkdtemp()
+    st.session_state.current_temp_dir = temp_dir
 
     summary_placeholder = st.empty()
     download_summary = dict(st.session_state.download_summary)  # preserve any prior summary
@@ -1058,8 +1279,12 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
         )
 
         # --- Chlorophyll-a ---
+        # If the link went down during turbidity there is no point hammering
+        # Earth Engine for the next two indices: stop and let the user resume.
         chl_results, chl_mean, chl_downloaded, chl_available = [], {}, 0, 0
         try:
+            if st.session_state.connection_interrupted:
+                raise InterruptedError("connection lost")
             chl_results, chl_mean, chl_downloaded, chl_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_CHLOROPHYLL, temp_dir,
                 cloudy_pixel_percentage, scale, resume=resume,
@@ -1081,6 +1306,8 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
         # --- CDOM (Colored Dissolved Organic Matter) ---
         cdom_results, cdom_mean, cdom_downloaded, cdom_available = [], {}, 0, 0
         try:
+            if st.session_state.connection_interrupted:
+                raise InterruptedError("connection lost")
             cdom_results, cdom_mean, cdom_downloaded, cdom_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_CDOM, temp_dir,
                 cloudy_pixel_percentage, scale, resume=resume,
@@ -1096,8 +1323,19 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             st.session_state.mean_data[PARAM_CDOM] = cdom_mean
         download_summary[PARAM_CDOM] = (cdom_downloaded, cdom_available)
 
-    progress_bar.progress(1.0)
-    stage_text.markdown("✅ پردازش هر سه شاخص به پایان رسید — ۱۰۰٪")
+    if st.session_state.connection_interrupted:
+        # Stopped on purpose the moment the link went down. Everything already
+        # downloaded is on disk and in session state; the months that were never
+        # attempted carry no status at all, so «ادامه از محل قطع» continues from
+        # exactly this point rather than repeating earlier months.
+        stage_text.markdown(
+            "⛔ ارتباط با سرور قطع شد و پایش در همان نقطه متوقف شد — "
+            "ماه‌های دریافت‌شده حفظ شده‌اند."
+        )
+        st.session_state.resume_after_interruption = True
+    else:
+        progress_bar.progress(1.0)
+        stage_text.markdown("✅ پردازش هر سه شاخص به پایان رسید — ۱۰۰٪")
 
     st.session_state.download_summary = download_summary
 
@@ -3800,7 +4038,33 @@ def render_setup_page():
     else:
         st.warning("⚠️ ابتدا یک منطقه را روی نقشه رسم کنید")
 
-    st.caption("پس از اجرا، پیش‌پردازش (حذف ابر، حذف برف، استخراج بدنه آب)، سپس شاخص کدورت و شاخص کلروفیل به‌طور خودکار محاسبه می‌شوند.")
+    st.caption("پس از اجرا، پیش‌پردازش (حذف ابر، حذف برف، استخراج بدنه آب)، سپس شاخص کدورت، شاخص کلروفیل و شاخص مواد آلی محلول به‌طور خودکار محاسبه می‌شوند.")
+
+    # --- Recover an unfinished run left on disk -------------------------------
+    # If the Streamlit session itself was lost (dropped websocket, page reload),
+    # session state is empty but the downloaded images and the run's settings
+    # are still in the cache folder. Restoring them here is what makes
+    # «ادامه از محل قطع» work after a disconnection instead of forcing a fresh
+    # run that downloads everything again.
+    if (not st.session_state.recovered_run_checked
+            and st.session_state.processing_config is None
+            and not st.session_state.processing_in_progress):
+        st.session_state.recovered_run_checked = True
+        recovered_config, recovered_dir = find_resumable_run()
+        if recovered_config:
+            st.session_state.processing_config = recovered_config
+            st.session_state.current_temp_dir = recovered_dir
+
+    if (st.session_state.processing_config is not None
+            and not _has_any_results()
+            and not st.session_state.processing_in_progress):
+        cfg = st.session_state.processing_config
+        st.info(
+            "♻️ یک پایش ناتمام از قبل روی سرور یافت شد "
+            f"(از {cfg.get('start_date', '؟')} تا {cfg.get('end_date', '؟')}). "
+            "با دکمه «ادامه از محل قطع» می‌توانید آن را از همان‌جا تکمیل کنید؛ "
+            "ماه‌های دریافت‌شده دوباره دانلود نمی‌شوند."
+        )
 
     # --- Buttons: Start (fresh) and Resume (after interruption) ---
     btn_col1, btn_col2 = st.columns(2)
@@ -3811,12 +4075,19 @@ def render_setup_page():
         disabled=st.session_state.processing_in_progress or selected_polygon is None
     )
 
-    # Show Resume button only when a previous interrupted run exists
+    # Show Resume button only when a previous interrupted run exists — either
+    # still held in session state, or recoverable from the run's cache folder.
     has_partial_cache = any(
         bool(st.session_state.downloaded_months.get(p)) or
         bool(st.session_state.month_statuses.get(p))
         for p in ALL_PARAMETERS
     )
+    if not has_partial_cache and st.session_state.processing_config is not None:
+        try:
+            cache_dir = get_cache_dir_for_config(st.session_state.processing_config)
+            has_partial_cache = any(n.endswith('.tif') for n in os.listdir(cache_dir))
+        except Exception:
+            has_partial_cache = False
     resume_btn = btn_col2.button(
         "🔄 ادامه از محل قطع",
         disabled=(
@@ -3872,6 +4143,12 @@ def render_setup_page():
             'cloudy_pixel_percentage': CLOUD_THRESHOLD,
             'scale': 10,
         }
+
+        # «شروع پایش» means a genuinely fresh run, so the cache folder for this
+        # exact configuration is emptied first. Only «ادامه از محل قطع» reuses
+        # what is already there — the behaviour the user expects from each
+        # button stays exactly as it was.
+        reset_run_cache(get_cache_dir_for_config(st.session_state.processing_config))
         st.rerun()
 
     if resume_btn and st.session_state.processing_config is not None:
