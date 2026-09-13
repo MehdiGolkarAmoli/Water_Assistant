@@ -86,10 +86,53 @@ GREEN_SNOW_THRESHOLD = 0.1   # B3 (Green) — MODIS band 4 analogue
 # Parameter identifiers (internal use only — never shown as a user choice)
 PARAM_TURBIDITY = "Turbidity (NDTI)"
 PARAM_CHLOROPHYLL = "Chlorophyll Index"
+PARAM_CDOM = "CDOM"
+
+# Every parameter the app monitors, in the order they are processed and shown.
+ALL_PARAMETERS = [PARAM_TURBIDITY, PARAM_CHLOROPHYLL, PARAM_CDOM]
 
 # Chlorophyll visualization range
 CHL_VMIN = -1.0
 CHL_VMAX = 0.9
+
+# CDOM (Colored Dissolved Organic Matter) visualization range — fallback only.
+# Unlike NDTI/NDCI, CDOM is not a normalized-difference index bounded to
+# [-1, 1]: it is an absorption coefficient whose plausible range differs a lot
+# between water bodies. The app therefore derives the display range from the
+# actual data of the run (2nd-98th percentile across all months, so colours stay
+# comparable month to month) and only falls back to these constants when that is
+# not possible.
+CDOM_VMIN = 0.0
+CDOM_VMAX = 30.0
+
+
+def empty_param_dict(factory=dict):
+    """A fresh {parameter: empty container} map for every monitored parameter."""
+    return {p: factory() for p in ALL_PARAMETERS}
+
+
+def param_short_name(parameter_type):
+    """Short technical label used in captions, tables and the Excel export."""
+    if parameter_type == PARAM_TURBIDITY:
+        return "NDTI"
+    if parameter_type == PARAM_CHLOROPHYLL:
+        return "Chl-a"
+    return "CDOM"
+
+
+def param_decimals(parameter_type):
+    """How many decimals to show for this parameter's values."""
+    return 4 if parameter_type == PARAM_TURBIDITY else 2
+
+
+def format_param_value(parameter_type, value, empty="—"):
+    """Format one mean value for display, honouring the parameter's precision."""
+    try:
+        if value is None or np.isnan(value):
+            return empty
+    except TypeError:
+        return empty
+    return f"{value:.{param_decimals(parameter_type)}f}"
 
 # -----------------------------------------------------------------------------
 # Persian UI font (B Nazanin)
@@ -149,12 +192,12 @@ if 'current_temp_dir' not in st.session_state:
     st.session_state.current_temp_dir = None
 if 'downloaded_months' not in st.session_state:
     # nested by parameter: {PARAM_TURBIDITY: {...}, PARAM_CHLOROPHYLL: {...}}
-    st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+    st.session_state.downloaded_months = empty_param_dict(dict)
 if 'month_statuses' not in st.session_state:
-    st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+    st.session_state.month_statuses = empty_param_dict(dict)
 if 'results' not in st.session_state:
     # nested by parameter
-    st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
+    st.session_state.results = empty_param_dict(list)
 if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
 if 'selected_region_index' not in st.session_state:
@@ -164,13 +207,16 @@ if 'processing_in_progress' not in st.session_state:
 if 'processing_config' not in st.session_state:
     st.session_state.processing_config = None
 if 'mean_data' not in st.session_state:
-    st.session_state.mean_data = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+    st.session_state.mean_data = empty_param_dict(dict)
 if 'download_summary' not in st.session_state:
     # simple end-user facing summary: {PARAM_TURBIDITY: (downloaded, available), ...}
     st.session_state.download_summary = {}
 if 'resume_after_interruption' not in st.session_state:
     # True when a previous run was interrupted and can be resumed
     st.session_state.resume_after_interruption = False
+if 'cdom_display_range' not in st.session_state:
+    # (vmin, vmax) colour range derived from the CDOM data of the current run
+    st.session_state.cdom_display_range = None
 if 'map_version' not in st.session_state:
     # Bumped whenever a region is saved or deleted. It is part of the map
     # widget's key, so the widget is remounted and drops the shape still held
@@ -252,7 +298,7 @@ def validate_geotiff_file(file_path, expected_bands=1):
 # =============================================================================
 def create_water_quality_collection(aoi, start_date, end_date, parameter_type, cloudy_pixel_percentage=CLOUD_THRESHOLD):
     """
-    Create water quality collection for either Turbidity or Chlorophyll.
+    Create water quality collection for Turbidity, Chlorophyll or CDOM.
 
     Snow detection is used as a PREPROCESSING step to exclude snow/ice pixels
     from water detection. Snow mask is never downloaded or shown to the user.
@@ -272,6 +318,18 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
     4. Create snow mask (MODIS-heritage water/snow test): NDSI > 0.42 AND B8 (NIR) > 0.11 AND B3 (Green) > 0.1
     5. Calculate AWEIsh for water body detection: B2 + 2.5*B3 - 1.5*(B8+B11) - 0.25*B12 > 0.05, excluding snow
     6. Calculate Chlorophyll Index (NDCI): (B5 - B4) / (B5 + B4)
+
+    For CDOM (Colored Dissolved Organic Matter):
+    1-5. Exactly the same preprocessing chain as above (cloud mask, snow mask,
+         AWEIsh water body) so all three parameters are computed on the very
+         same water pixels and are directly comparable.
+    6. Calculate CDOM from the green/red band ratio:
+           CDOM = 537 * exp(-2.93 * (B3 / B4))
+       This is the Landsat-heritage band-ratio model of Brezonik, Menken &
+       Bauer (2005), applied to the equivalent Sentinel-2 bands. Its output
+       approximates the CDOM absorption coefficient at 440 nm (a440), in
+       units of 1/m — higher values mean more dissolved organic ("humic")
+       matter and darker, tea-coloured water.
     """
     s2_sr = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
              .filterBounds(aoi)
@@ -333,6 +391,62 @@ def create_water_quality_collection(aoi, start_date, end_date, parameter_type, c
             return combined.clip(aoi).copyProperties(img, ['system:time_start'])
 
         return s2_joined.map(calculate_turbidity)
+
+    elif parameter_type == PARAM_CDOM:
+        def calculate_cdom(img):
+            cloud = img.select('probability')
+            cloud_free = cloud.lt(CLOUD_PROB_THRESHOLD)
+
+            sr = img.select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']).multiply(0.0001)
+
+            ndsi = sr.normalizedDifference(['B3', 'B11']).rename('ndsi')
+            is_snow = (
+                ndsi.gt(NDSI_THRESHOLD)                          # NDSI > 0.42 — spectral snow signature
+                .And(sr.select('B8').gt(NIR_SNOW_THRESHOLD))     # NIR ~0.11 — excludes water, snow reflects strongly here
+                .And(sr.select('B3').gt(GREEN_SNOW_THRESHOLD))   # Green ~0.1 — excludes dark shadow/non-snow surfaces
+            )
+
+            awei = sr.expression(
+                'BLUE + 2.5 * GREEN - 1.5 * (NIR + SWIR1) - 0.25 * SWIR2',
+                {
+                    'BLUE': sr.select('B2'),
+                    'GREEN': sr.select('B3'),
+                    'NIR': sr.select('B8'),
+                    'SWIR1': sr.select('B11'),
+                    'SWIR2': sr.select('B12'),
+                }
+            ).rename('awei')
+            water_body = awei.gt(AWEI_THRESHOLD).And(is_snow.Not())
+
+            # CDOM from the green/red band ratio (Brezonik et al., 2005):
+            #     CDOM = 537 * exp(-2.93 * (B3 / B4))
+            # Red reflectance is the denominator, so pixels where it is zero or
+            # negative (deep shadow, residual masking artefacts) are excluded
+            # rather than producing an infinite ratio.
+            red_ok = sr.select('B4').gt(0)
+
+            cdom = sr.expression(
+                '537 * exp(-2.93 * (B03 / B04))',
+                {
+                    'B03': sr.select('B3'),
+                    'B04': sr.select('B4'),
+                }
+            ).rename('wq_index')
+
+            wq_masked = (cdom
+                         .updateMask(cloud_free)
+                         .updateMask(water_body)
+                         .updateMask(red_ok))
+
+            rgb = sr.select(['B4', 'B3', 'B2'])
+
+            combined = (wq_masked
+                       .addBands(rgb)
+                       .addBands(water_body.rename('water_mask')))
+
+            return combined.clip(aoi).copyProperties(img, ['system:time_start'])
+
+        return s2_joined.map(calculate_cdom)
 
     else:  # CHLOROPHYLL
         def calculate_chlorophyll(img):
@@ -549,7 +663,48 @@ def create_chlorophyll_colormap():
     return LinearSegmentedColormap.from_list('chlorophyll', colors, N=256)
 
 
-def generate_thumbnails(wq_path, rgb_path, month_name, parameter_type, max_size=300):
+def create_cdom_colormap():
+    """Clear blue water -> yellow -> amber -> dark brown (tea-coloured, humic)."""
+    colors = ['#08306B', '#2171B5', '#6BAED6', '#EDF8B1', '#FEE391', '#EC7014', '#662506']
+    return LinearSegmentedColormap.from_list('cdom', colors, N=256)
+
+
+def compute_cdom_display_range(wq_paths, low=2, high=98):
+    """
+    Derive one common colour range for every CDOM month of a run.
+
+    CDOM is an absorption coefficient, not a bounded index, so a fixed scale
+    either saturates or washes out depending on the water body. The 2nd-98th
+    percentile of all months pooled together keeps the colours meaningful AND
+    comparable between months (which a per-image stretch would not).
+    """
+    samples = []
+    for path in wq_paths:
+        try:
+            with rasterio.open(path) as src:
+                data = src.read(1)[::4, ::4]  # subsample: plenty for a percentile
+            finite = data[np.isfinite(data) & (data != 0)]
+            if finite.size:
+                samples.append(finite)
+        except Exception:
+            continue
+
+    if not samples:
+        return CDOM_VMIN, CDOM_VMAX
+
+    pooled = np.concatenate(samples)
+    if pooled.size == 0:
+        return CDOM_VMIN, CDOM_VMAX
+
+    vmin = float(np.percentile(pooled, low))
+    vmax = float(np.percentile(pooled, high))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        return CDOM_VMIN, CDOM_VMAX
+    return vmin, vmax
+
+
+def generate_thumbnails(wq_path, rgb_path, month_name, parameter_type, max_size=300,
+                        value_range=None):
     """Generate RGB and water quality index thumbnails."""
     try:
         with rasterio.open(wq_path) as src:
@@ -589,6 +744,12 @@ def generate_thumbnails(wq_path, rgb_path, month_name, parameter_type, max_size=
         if parameter_type == PARAM_TURBIDITY:
             cmap = create_turbidity_colormap()
             wq_normalized = np.clip((wq_valid + 0.3) / 0.6, 0, 1)
+        elif parameter_type == PARAM_CDOM:
+            cmap = create_cdom_colormap()
+            vmin, vmax = value_range if value_range else (CDOM_VMIN, CDOM_VMAX)
+            if vmax <= vmin:
+                vmax = vmin + 1e-6
+            wq_normalized = np.clip((wq_valid - vmin) / (vmax - vmin), 0, 1)
         else:
             cmap = create_chlorophyll_colormap()
             wq_normalized = np.clip((wq_valid - CHL_VMIN) / (CHL_VMAX - CHL_VMIN), 0, 1)
@@ -660,7 +821,11 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
     from cache/resume) and once after every month is handled, so the caller
     can drive a progress bar / stage label.
     """
-    param_short = "turbidity" if parameter_type == PARAM_TURBIDITY else "chlorophyll"
+    param_short = {
+        PARAM_TURBIDITY: "turbidity",
+        PARAM_CHLOROPHYLL: "chlorophyll",
+        PARAM_CDOM: "cdom",
+    }[parameter_type]
 
     start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
@@ -799,9 +964,20 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
     results = []
     mean_data = {}
 
+    # CDOM gets one colour range shared by every month of the run (see
+    # compute_cdom_display_range); the two normalized-difference indices keep
+    # their fixed scales exactly as before.
+    value_range = None
+    if parameter_type == PARAM_CDOM and downloaded_months:
+        value_range = compute_cdom_display_range(
+            [downloaded_months[m]['wq_index'] for m in sorted(downloaded_months.keys())]
+        )
+        st.session_state.cdom_display_range = value_range
+
     for month_name in sorted(downloaded_months.keys()):
         paths = downloaded_months[month_name]
-        thumb = generate_thumbnails(paths['wq_index'], paths['rgb'], month_name, parameter_type)
+        thumb = generate_thumbnails(paths['wq_index'], paths['rgb'], month_name, parameter_type,
+                                    value_range=value_range)
         if thumb:
             results.append(thumb)
             mean_data[month_name] = {'mean': thumb['mean_value'], 'coverage': thumb['water_coverage']}
@@ -812,14 +988,15 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
 def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_THRESHOLD,
                        scale=10, resume=False):
     """
-    Automatically runs preprocessing + both index calculations (NDTI, then
-    Chlorophyll-a) in sequence. Displays only a simple, user-friendly summary.
+    Automatically runs preprocessing + all three index calculations (NDTI, then
+    Chlorophyll-a, then CDOM) in sequence. Displays only a simple,
+    user-friendly summary.
 
     Resilience additions vs. original:
     - resume=True is forwarded to process_single_parameter so cached months are
       skipped rather than re-downloaded.
-    - Each parameter block is wrapped in try/except so a hard failure on turbidity
-      does not prevent chlorophyll from running (and vice-versa).
+    - Each parameter block is wrapped in try/except so a hard failure on one
+      index does not prevent the others from running.
     - processing_config is written to session state here so the main() button
       handler can pass it to a resume run later.
     """
@@ -833,13 +1010,13 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
     # ------------------------------------------------------------------
     # Progress bar + stage label — shows overall level (%) and which stage
     # (parameter + month) is currently being processed. Total work units are
-    # "months × 2 parameters"; months already recovered via resume/disk cache
+    # "months × 3 parameters"; months already recovered via resume/disk cache
     # count as already-done so the bar starts from the right place on Resume.
     # ------------------------------------------------------------------
     start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
     total_months = (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month)
-    total_units = max(total_months * 2, 1)
+    total_units = max(total_months * len(ALL_PARAMETERS), 1)
 
     progress_bar = st.progress(0)
     stage_text = st.empty()
@@ -865,7 +1042,7 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             turb_results, turb_mean, turb_downloaded, turb_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_TURBIDITY, temp_dir,
                 cloudy_pixel_percentage, scale, resume=resume,
-                progress_callback=make_progress_callback("🌊 مرحله ۱ از ۲ — شاخص کدورت (NDTI)", 0)
+                progress_callback=make_progress_callback("🌊 مرحله ۱ از ۳ — شاخص کدورت (NDTI)", 0)
             )
         except Exception:
             pass  # Partial or zero results; pipeline continues to chlorophyll
@@ -886,7 +1063,7 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             chl_results, chl_mean, chl_downloaded, chl_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_CHLOROPHYLL, temp_dir,
                 cloudy_pixel_percentage, scale, resume=resume,
-                progress_callback=make_progress_callback("🌿 مرحله ۲ از ۲ — شاخص کلروفیل", total_months)
+                progress_callback=make_progress_callback("🌿 مرحله ۲ از ۳ — شاخص کلروفیل", total_months)
             )
         except Exception:
             pass  # Partial or zero results; still show whatever was collected
@@ -896,14 +1073,36 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             st.session_state.mean_data[PARAM_CHLOROPHYLL] = chl_mean
         download_summary[PARAM_CHLOROPHYLL] = (chl_downloaded, chl_available)
 
+        summary_placeholder.info(
+            f"🌊 شاخص کدورت: {turb_downloaded} تصویر از {turb_available} تصویر موجود دریافت شد.\n\n"
+            f"🌿 شاخص کلروفیل: {chl_downloaded} تصویر از {chl_available} تصویر موجود دریافت شد."
+        )
+
+        # --- CDOM (Colored Dissolved Organic Matter) ---
+        cdom_results, cdom_mean, cdom_downloaded, cdom_available = [], {}, 0, 0
+        try:
+            cdom_results, cdom_mean, cdom_downloaded, cdom_available = process_single_parameter(
+                aoi, start_date, end_date, PARAM_CDOM, temp_dir,
+                cloudy_pixel_percentage, scale, resume=resume,
+                progress_callback=make_progress_callback(
+                    "🍂 مرحله ۳ از ۳ — شاخص مواد آلی محلول (CDOM)", total_months * 2
+                )
+            )
+        except Exception:
+            pass  # Partial or zero results; still show whatever was collected
+
+        if cdom_results:
+            st.session_state.results[PARAM_CDOM] = cdom_results
+            st.session_state.mean_data[PARAM_CDOM] = cdom_mean
+        download_summary[PARAM_CDOM] = (cdom_downloaded, cdom_available)
+
     progress_bar.progress(1.0)
-    stage_text.markdown("✅ پردازش هر دو شاخص به پایان رسید — ۱۰۰٪")
+    stage_text.markdown("✅ پردازش هر سه شاخص به پایان رسید — ۱۰۰٪")
 
     st.session_state.download_summary = download_summary
 
-    has_any_results = (
-        bool(st.session_state.results.get(PARAM_TURBIDITY)) or
-        bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+    has_any_results = any(
+        bool(st.session_state.results.get(p)) for p in ALL_PARAMETERS
     )
     return has_any_results
 
@@ -989,6 +1188,56 @@ def render_chlorophyll_guidance_panel():
         )
 
 
+def render_cdom_guidance_panel():
+    """Permanently visible legend + management guidance for CDOM."""
+    st.markdown("### 🎨 راهنمای رنگ و تفسیر مدیریتی — شاخص مواد آلی محلول رنگی (CDOM)")
+
+    col_legend, col_text = st.columns([1, 2])
+
+    with col_legend:
+        fig, ax = plt.subplots(figsize=(5, 0.45))
+        cmap = create_cdom_colormap()
+        gradient = np.linspace(0, 1, 256).reshape(1, -1)
+        ax.imshow(gradient, aspect='auto', cmap=cmap)
+        ax.set_xticks([0, 128, 255])
+        ax.set_xticklabels(['کم (آب زلال)', 'متوسط', 'زیاد (آب چای‌رنگ)'])
+        ax.set_yticks([])
+        st.pyplot(fig)
+        plt.close(fig)
+
+        value_range = st.session_state.get('cdom_display_range')
+        if value_range:
+            st.caption(
+                f"محدوده رنگی این پایش: از {value_range[0]:.1f} تا {value_range[1]:.1f} "
+                "(بر متر) — بر پایه‌ی داده‌های همین منطقه و بازه زمانی تعیین شده است."
+            )
+
+    with col_text:
+        st.markdown(
+            """
+**افزایش مواد آلی محلول رنگی:**
+- تیره و چای‌رنگ شدن آب و کاهش مطلوبیت آب شرب (رنگ، بو و مزه)
+- افزایش مصرف مواد ضدعفونی‌کننده و خطر تشکیل فرآورده‌های جانبی گندزدایی در تصفیه‌خانه
+- کاهش نفوذ نور به اعماق و تغییر شرایط زیستی بدنه آبی
+- نشانه احتمالی ورود رواناب حوضه آبریز، زهکشی اراضی آلی/تالابی، یا تخلیه فاضلاب
+
+**کاهش مواد آلی محلول رنگی:**
+- شفاف‌تر شدن آب و کاهش نیاز به مواد شیمیایی در تصفیه
+- کاهش ریسک بهداشتی مرتبط با فرآورده‌های جانبی گندزدایی
+- نشانه کاهش ورود بار آلی از حوضه آبریز
+
+**چرا پایش این شاخص مهم است؟**
+مواد آلی محلول رنگی، برخلاف کدورت، ذرات معلق نیستند و با ته‌نشینی ساده حذف نمی‌شوند؛
+بنابراین افزایش آن مستقیماً بر هزینه و پیچیدگی فرایند تصفیه آب شرب اثر می‌گذارد. این شاخص
+معمولاً پس از بارش‌های سنگین و ذوب برف (ورود رواناب از خاک و پوشش گیاهی حوضه) افزایش
+می‌یابد و یکی از بهترین نشانگرهای ورود بار آلی از سطح حوضه به بدنه آبی است.
+
+*این شاخص از نسبت باند سبز به قرمز سنتینل-۲ و رابطه‌ی Brezonik و همکاران (۲۰۰۵) محاسبه
+می‌شود و تقریبی از ضریب جذب مواد آلی محلول در طول موج ۴۴۰ نانومتر (بر متر) است.*
+            """
+        )
+
+
 # =============================================================================
 # Display: imagery, time-series, and statistics for one parameter
 # =============================================================================
@@ -998,13 +1247,10 @@ def display_side_by_side_imagery(results, parameter_type):
         st.info("داده‌ای برای نمایش در این بازه زمانی وجود ندارد.")
         return
 
-    param_short = "NDTI" if parameter_type == PARAM_TURBIDITY else "Chl-a"
+    param_short = param_short_name(parameter_type)
 
     for r in results:
-        if parameter_type == PARAM_TURBIDITY:
-            mean_str = f"{r['mean_value']:.4f}" if not np.isnan(r['mean_value']) else "بدون داده"
-        else:
-            mean_str = f"{r['mean_value']:.2f}" if not np.isnan(r['mean_value']) else "بدون داده"
+        mean_str = format_param_value(parameter_type, r['mean_value'], empty="بدون داده")
 
         cols = st.columns(2)
         cols[0].image(r['wq_image'], caption=f"{r['month_name']} — {param_short}: {mean_str}", use_container_width=True)
@@ -1021,9 +1267,18 @@ def display_time_series_chart(results, parameter_type):
     # not installed on the machine rendering the figure).
     PERSIAN_FONT = ['B Nazanin', 'BNazanin', 'Vazirmatn', 'Tahoma', 'DejaVu Sans']
 
-    param_label_fa = "شاخص کدورت آب (NDTI)" if parameter_type == PARAM_TURBIDITY else "شاخص کلروفیل (NDCI)"
-    param_unit = "" if parameter_type == PARAM_TURBIDITY else " (µg/L)"
-    chart_title = "روند زمانی کدورت آب" if parameter_type == PARAM_TURBIDITY else "روند زمانی کلروفیل"
+    if parameter_type == PARAM_TURBIDITY:
+        param_label_fa = "شاخص کدورت آب (NDTI)"
+        param_unit = ""
+        chart_title = "روند زمانی کدورت آب"
+    elif parameter_type == PARAM_CDOM:
+        param_label_fa = "شاخص مواد آلی محلول (CDOM)"
+        param_unit = " (بر متر)"
+        chart_title = "روند زمانی مواد آلی محلول رنگی"
+    else:
+        param_label_fa = "شاخص کلروفیل (NDCI)"
+        param_unit = " (µg/L)"
+        chart_title = "روند زمانی کلروفیل"
 
     months = []
     mean_values = []
@@ -1041,7 +1296,11 @@ def display_time_series_chart(results, parameter_type):
 
     fig, ax1 = plt.subplots(figsize=(12, 5))
 
-    color1 = '#1f77b4' if parameter_type == PARAM_TURBIDITY else '#228B22'
+    color1 = {
+        PARAM_TURBIDITY: '#1f77b4',
+        PARAM_CHLOROPHYLL: '#228B22',
+        PARAM_CDOM: '#8C510A',
+    }[parameter_type]
     ax1.set_xlabel('ماه', fontsize=13, fontfamily=PERSIAN_FONT)
     ax1.set_ylabel(f'میانگین {param_label_fa}{param_unit}', color=color1, fontsize=13, fontfamily=PERSIAN_FONT)
 
@@ -1053,6 +1312,14 @@ def display_time_series_chart(results, parameter_type):
         if parameter_type == PARAM_TURBIDITY:
             ax1.set_ylim(min(mean_values) - 0.02, max(mean_values) + 0.02)
             ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5, label='خط خنثی (کدورت = ۰)')
+        elif parameter_type == PARAM_CDOM:
+            # CDOM is an absorption coefficient, not a normalized index: it is
+            # always positive and has no meaningful "neutral" line at zero, so
+            # the axis is simply scaled to the observed values.
+            val_min = min(mean_values)
+            val_max = max(mean_values)
+            padding = max((val_max - val_min) * 0.15, 0.05)
+            ax1.set_ylim(max(0.0, val_min - padding), val_max + padding)
         else:
             # FIX: NDCI (like NDTI) is a normalized-difference index and can be
             # negative — forcing the axis to start at 0 (the old behaviour)
@@ -1091,7 +1358,7 @@ def display_statistics_summary(results, parameter_type):
     if not results:
         return
 
-    param_short = "NDTI" if parameter_type == PARAM_TURBIDITY else "Chl-a"
+    param_short = param_short_name(parameter_type)
 
     months = [r['month_name'] for r in results]
     mean_values = [r['mean_value'] if not np.isnan(r['mean_value']) else 0 for r in results]
@@ -1103,14 +1370,9 @@ def display_statistics_summary(results, parameter_type):
     col1, col2, col3, col4 = st.columns(4)
 
     if valid_values:
-        if parameter_type == PARAM_TURBIDITY:
-            col1.metric(f"میانگین {param_short}", f"{np.mean(valid_values):.4f}")
-            col2.metric(f"حداکثر {param_short}", f"{np.max(valid_values):.4f}")
-            col3.metric(f"حداقل {param_short}", f"{np.min(valid_values):.4f}")
-        else:
-            col1.metric(f"میانگین {param_short}", f"{np.mean(valid_values):.2f}")
-            col2.metric(f"حداکثر {param_short}", f"{np.max(valid_values):.2f}")
-            col3.metric(f"حداقل {param_short}", f"{np.min(valid_values):.2f}")
+        col1.metric(f"میانگین {param_short}", format_param_value(parameter_type, np.mean(valid_values)))
+        col2.metric(f"حداکثر {param_short}", format_param_value(parameter_type, np.max(valid_values)))
+        col3.metric(f"حداقل {param_short}", format_param_value(parameter_type, np.min(valid_values)))
     else:
         col1.metric(f"میانگین {param_short}", "—")
         col2.metric(f"حداکثر {param_short}", "—")
@@ -1121,10 +1383,9 @@ def display_statistics_summary(results, parameter_type):
     with st.expander("📋 جدول داده‌های ماهانه"):
         import pandas as pd
 
-        if parameter_type == PARAM_TURBIDITY:
-            value_col = [f"{v:.4f}" if v != 0 else "—" for v in mean_values]
-        else:
-            value_col = [f"{v:.2f}" if v != 0 else "—" for v in mean_values]
+        value_col = [
+            format_param_value(parameter_type, v) if v != 0 else "—" for v in mean_values
+        ]
 
         df = pd.DataFrame({
             'ماه': months,
@@ -1137,8 +1398,8 @@ def display_statistics_summary(results, parameter_type):
 def generate_combined_timeseries_excel():
     """
     Build a single Excel (.xlsx) workbook containing the monthly time-series
-    values for BOTH parameters — Turbidity (NDTI) and Chlorophyll (NDCI) —
-    as two sheets in one file. Returns workbook bytes for st.download_button.
+    values for ALL monitored parameters — Turbidity (NDTI), Chlorophyll (NDCI)
+    and CDOM — as one sheet each. Returns workbook bytes for st.download_button.
     """
     import io
     from openpyxl import Workbook
@@ -1160,6 +1421,7 @@ def generate_combined_timeseries_excel():
     sections = [
         (PARAM_TURBIDITY, "کدورت (NDTI)", "میانگین NDTI"),
         (PARAM_CHLOROPHYLL, "کلروفیل (NDCI)", "میانگین NDCI"),
+        (PARAM_CDOM, "مواد آلی محلول (CDOM)", "میانگین CDOM"),
     ]
 
     for parameter_type, sheet_name, value_header in sections:
@@ -1226,6 +1488,8 @@ def render_parameter_page(parameter_type):
     """
     if parameter_type == PARAM_TURBIDITY:
         _render_active_section_badge("🌊", "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
+    elif parameter_type == PARAM_CDOM:
+        _render_active_section_badge("🍂", "مواد آلی محلول رنگی (CDOM)", "#7A4A12", "#D9A05B")
     else:
         _render_active_section_badge("🌿", "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
 
@@ -1237,6 +1501,8 @@ def render_parameter_page(parameter_type):
 
     if parameter_type == PARAM_TURBIDITY:
         render_turbidity_guidance_panel()
+    elif parameter_type == PARAM_CDOM:
+        render_cdom_guidance_panel()
     else:
         render_chlorophyll_guidance_panel()
 
@@ -1392,7 +1658,7 @@ def _expert_analyze_sheet(df, value_column, date_col=None, water_col=None):
 
 
 def _expert_compute_correlation_by_date(df1, value_col1, df2, value_col2, date_col1=None, date_col2=None):
-    """Correlate NDTI vs NDCI matched by actual date, not row position."""
+    """Correlate two parameter series matched by actual date, not row position."""
     import pandas as pd
 
     date_col1 = date_col1 or df1.columns[0]
@@ -1411,10 +1677,10 @@ def _expert_compute_correlation_by_date(df1, value_col1, df2, value_col2, date_c
     unmatched_2 = set(d2["date"]) - set(merged["date"])
 
     return {
-        "correlation_ndti_ndci": float(merged["v1"].corr(merged["v2"])),
+        "pearson_correlation": float(merged["v1"].corr(merged["v2"])),
         "n_matched_dates": int(len(merged)),
-        "unmatched_dates_ndti_only": sorted(d.strftime("%Y-%m") for d in unmatched_1),
-        "unmatched_dates_ndci_only": sorted(d.strftime("%Y-%m") for d in unmatched_2),
+        "unmatched_dates_first_only": sorted(d.strftime("%Y-%m") for d in unmatched_1),
+        "unmatched_dates_second_only": sorted(d.strftime("%Y-%m") for d in unmatched_2),
     }
 
 
@@ -1461,12 +1727,24 @@ def analyze_water_quality_from_bytes(excel_bytes):
         results[sheet] = _expert_analyze_sheet(df, value_col, water_col=water_col)
         cleaned_frames[sheet] = df
 
+    # Correlations between every pair of parameters (turbidity ↔ chlorophyll,
+    # turbidity ↔ CDOM, chlorophyll ↔ CDOM), each matched by calendar month.
     if len(cleaned_frames) >= 2:
-        sheet_a, sheet_b = list(cleaned_frames.keys())[:2]
-        df1, df2 = cleaned_frames[sheet_a], cleaned_frames[sheet_b]
-        col1 = df1.select_dtypes(include=np.number).columns[0]
-        col2 = df2.select_dtypes(include=np.number).columns[0]
-        results["relationship"] = _expert_compute_correlation_by_date(df1, col1, df2, col2)
+        sheets = list(cleaned_frames.keys())
+        relationships = {}
+        for i in range(len(sheets)):
+            for j in range(i + 1, len(sheets)):
+                sheet_a, sheet_b = sheets[i], sheets[j]
+                df1, df2 = cleaned_frames[sheet_a], cleaned_frames[sheet_b]
+                try:
+                    col1 = df1.select_dtypes(include=np.number).columns[0]
+                    col2 = df2.select_dtypes(include=np.number).columns[0]
+                    relationships[f"{sheet_a} ↔ {sheet_b}"] = \
+                        _expert_compute_correlation_by_date(df1, col1, df2, col2)
+                except Exception:
+                    continue
+        if relationships:
+            results["relationships"] = relationships
 
     # --- Lift region center coordinates to the top level (for the chat agent) ---
     if cleaned_frames:
@@ -1487,7 +1765,7 @@ def _expert_results_signature():
     """Cheap signature used to detect when monitoring results changed, so the
     JSON summary + chat history for نظر متخصص آب can be refreshed automatically."""
     sig = []
-    for p in (PARAM_TURBIDITY, PARAM_CHLOROPHYLL):
+    for p in ALL_PARAMETERS:
         results = st.session_state.results.get(p, [])
         sig.append(tuple(sorted(
             (r['month_name'], None if np.isnan(r['mean_value']) else round(float(r['mean_value']), 6))
@@ -1535,10 +1813,38 @@ def _build_agent_system_prompt(analysis_json):
     """
     return f"""شما یک متخصص باتجربه در زمینه کیفیت آب، سنجش‌ازدور ماهواره‌ای (سنتینل-۲)، و اقلیم‌شناسی هستید.
 
-در ادامه، خلاصه‌ی تحلیل آماری سری زمانی شاخص کدورت آب و شاخص کلروفیل یک بدنه‌ی آبی، به‌صورت JSON در
-اختیار شما قرار گرفته است. این خلاصه شامل مختصات مرکز منطقه (کلیدهای center_latitude و
-center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند من-کندال، ناهنجاری‌های شناسایی‌شده (بر پایه‌ی
-انحراف مطلق از میانه)، الگوی فصلی چندساله، آمار توصیفی، و همبستگی بین دو شاخص است.
+در ادامه، خلاصه‌ی تحلیل آماری سری زمانی **سه شاخص** کیفیت آب یک بدنه‌ی آبی، به‌صورت JSON در اختیار
+شما قرار گرفته است. این خلاصه شامل مختصات مرکز منطقه (کلیدهای center_latitude و center_longitude،
+در صورت وجود)، نتیجه‌ی آزمون روند من-کندال، ناهنجاری‌های شناسایی‌شده (بر پایه‌ی انحراف مطلق از
+میانه)، الگوی فصلی چندساله، آمار توصیفی، و همبستگی دوبه‌دوی شاخص‌ها (کلید relationships) است.
+
+سه شاخص موجود در داده‌ها (هر سه روی دقیقاً یک ماسک پهنه‌ی آبی و یک زنجیره‌ی پیش‌پردازش یکسان —
+حذف ابر، حذف برف، و استخراج پهنه آب با AWEIsh — محاسبه شده‌اند و بنابراین مستقیماً با هم قابل
+مقایسه‌اند):
+
+۱. «شاخص کدورت آب» (برگه‌ی «کدورت (NDTI)» در داده‌ها) — اختلاف نرمال‌شده‌ی باند قرمز و سبز؛ بی‌بعد و
+   در بازه‌ی ۱- تا ۱+. افزایش آن یعنی آب گل‌آلودتر و ذرات معلق بیشتر (فرسایش خاک، رسوب، رواناب،
+   فعالیت عمرانی بالادست).
+
+۲. «شاخص کلروفیل» (برگه‌ی «کلروفیل (NDCI)») — اختلاف نرمال‌شده‌ی باند لبه‌ی قرمز و قرمز؛ بی‌بعد و در
+   بازه‌ی ۱- تا ۱+. افزایش آن یعنی زیست‌توده‌ی جلبکی/فیتوپلانکتونی بیشتر و احتمال شکوفایی جلبکی.
+
+۳. «شاخص مواد آلی محلول رنگی» (برگه‌ی «مواد آلی محلول (CDOM)») — از نسبت باند سبز به قرمز سنتینل-۲ و
+   با رابطه‌ی CDOM = 537 × exp(−2.93 × (B3/B4)) محاسبه می‌شود (رابطه‌ی باندی Brezonik و همکاران،
+   ۲۰۰۵) و تقریبی از ضریب جذب مواد آلی محلول در طول موج ۴۴۰ نانومتر، با واحد «بر متر»، است. این
+   شاخص برخلاف دو شاخص قبلی نرمال‌شده نیست، همیشه مثبت است و خط خنثی در صفر ندارد؛ بنابراین مقادیر
+   آن را هرگز مانند NDTI/NDCI در بازه‌ی ۱- تا ۱+ تفسیر نکنید.
+
+نکات تفسیری مهم درباره‌ی شاخص مواد آلی محلول رنگی:
+- این شاخص «ماده‌ی محلول» را می‌سنجد، نه ذرات معلق. بنابراین افزایش هم‌زمان کدورت و مواد آلی محلول
+  معمولاً نشانه‌ی ورود رواناب از سطح حوضه (بارش سنگین یا ذوب برف) است، در حالی که افزایش مواد آلی
+  محلول بدون افزایش کدورت بیشتر به زهکشی اراضی آلی/تالابی، تخلیه‌ی فاضلاب یا تجزیه‌ی مواد آلی درون
+  خود بدنه‌ی آبی اشاره دارد.
+- افزایش آن برای بهره‌بردار آب شرب مهم است: رنگ، بو و مزه‌ی آب را تغییر می‌دهد، مصرف مواد
+  گندزدا را بالا می‌برد و خطر تشکیل فرآورده‌های جانبی گندزدایی را افزایش می‌دهد. این مواد با
+  ته‌نشینی ساده حذف نمی‌شوند.
+- مواد آلی محلول رنگی نور را جذب می‌کند و می‌تواند بر برآورد کلروفیل اثر بگذارد؛ اگر کلروفیل و مواد
+  آلی محلول هم‌زمان و به‌شدت همبسته بودند، این احتمال را در تفسیر خود صریحاً ذکر کنید.
 
 داده‌های تحلیل:
 {analysis_json}
@@ -1611,10 +1917,15 @@ center_longitude، در صورت وجود)، نتیجه‌ی آزمون روند
    خود نسازید.
 ۴. در پاسخ نهایی، در صورت استفاده از ابزارها، بین «شناسایی منطقه»، «داده‌ی عددی دقیق هواشناسی مرتبط با
    روند/ناهنجاری» و «زمینه‌ی کلی اقلیمی» تمایز قائل شوید.
-۵. اگر پرسش کاربر به زبان فارسی باشد، پاسخ باید کاملاً و فقط به زبان فارسی نوشته شود و از هیچ مخفف یا
-   واژه‌ی انگلیسی استفاده نشود (برای نمونه به‌جای NDTI بنویسید «شاخص کدورت آب» و به‌جای NDCI بنویسید
-   «شاخص کلروفیل»؛ به‌جای MAD بنویسید «انحراف مطلق از میانه»).
-۶. اگر پرسش کاربر به زبان دیگری باشد، به همان زبان پاسخ دهید.
+۵. هر سه شاخص را با هم و در کنار یکدیگر تفسیر کنید، نه جدا از هم. به همبستگی‌های موجود در کلید
+   relationships توجه کنید و هر جا الگوی مشترک یا واگرایی معناداری بین شاخص‌ها دیدید (برای نمونه
+   افزایش هم‌زمان کدورت و مواد آلی محلول پس از یک ماه پربارش، یا افزایش کلروفیل بدون تغییر دو شاخص
+   دیگر)، آن را صریح بیان کرده و توضیح فرایندی آن را ارائه دهید.
+۶. اگر پرسش کاربر به زبان فارسی باشد، پاسخ باید کاملاً و فقط به زبان فارسی نوشته شود و از هیچ مخفف یا
+   واژه‌ی انگلیسی استفاده نشود (برای نمونه به‌جای NDTI بنویسید «شاخص کدورت آب»، به‌جای NDCI بنویسید
+   «شاخص کلروفیل»، و به‌جای CDOM بنویسید «مواد آلی محلول رنگی»؛ به‌جای MAD بنویسید «انحراف مطلق از
+   میانه»).
+۷. اگر پرسش کاربر به زبان دیگری باشد، به همان زبان پاسخ دهید.
 """
 
 
@@ -1925,10 +2236,7 @@ def render_expert_chat_tab():
     if 'expert_analysis_signature' not in st.session_state:
         st.session_state.expert_analysis_signature = None
 
-    results_turb = st.session_state.results.get(PARAM_TURBIDITY, [])
-    results_chl = st.session_state.results.get(PARAM_CHLOROPHYLL, [])
-
-    if not results_turb and not results_chl:
+    if not any(st.session_state.results.get(p) for p in ALL_PARAMETERS):
         st.info("برای استفاده از این بخش، ابتدا پایش را اجرا کنید تا داده‌ای برای تحلیل وجود داشته باشد.")
         return
 
@@ -2524,10 +2832,10 @@ def _inject_global_app_css():
             border: 1px solid var(--wq-border) !important;
             border-radius: 14px !important;
             box-shadow: none !important;
-            padding: 0.85rem 0.6rem !important;
+            padding: 0.8rem 0.35rem !important;
             min-height: 4.1rem !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.75rem !important;
+            font-size: 1.5rem !important;
             font-weight: 800 !important;
             line-height: 1.5 !important;
             direction: rtl !important;
@@ -2536,7 +2844,7 @@ def _inject_global_app_css():
         div[class*="st-key-wqnav_"] .stButton > button p,
         [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.75rem !important;
+            font-size: 1.5rem !important;
             font-weight: 800 !important;
             line-height: 1.5 !important;
             margin: 0 !important;
@@ -2781,14 +3089,14 @@ NAV_PAGES = [
     ("setup",       "🛰️", "تعریف پایش"),
     ("turbidity",   "🌊", "کدورت"),
     ("chlorophyll", "🌿", "کلروفیل"),
+    ("cdom",        "🍂", "مواد آلی"),
     ("chat",        "🤖", "چت بات"),
 ]
 
 
 def _has_any_results():
     """True once at least one parameter has monitoring results in memory."""
-    return bool(st.session_state.results.get(PARAM_TURBIDITY)) or \
-           bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+    return any(bool(st.session_state.results.get(p)) for p in ALL_PARAMETERS)
 
 
 def _render_app_header():
@@ -2879,11 +3187,12 @@ def _render_status_strip():
             use_container_width=True,
             disabled=st.session_state.processing_in_progress,
         ):
-            st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-            st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-            st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
-            st.session_state.mean_data = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+            st.session_state.downloaded_months = empty_param_dict(dict)
+            st.session_state.month_statuses = empty_param_dict(dict)
+            st.session_state.results = empty_param_dict(list)
+            st.session_state.mean_data = empty_param_dict(dict)
             st.session_state.download_summary = {}
+            st.session_state.cdom_display_range = None
             st.session_state.current_temp_dir = None
             st.session_state.processing_config = None
             st.session_state.processing_complete = False
@@ -3503,11 +3812,10 @@ def render_setup_page():
     )
 
     # Show Resume button only when a previous interrupted run exists
-    has_partial_cache = (
-        bool(st.session_state.downloaded_months.get(PARAM_TURBIDITY)) or
-        bool(st.session_state.downloaded_months.get(PARAM_CHLOROPHYLL)) or
-        bool(st.session_state.month_statuses.get(PARAM_TURBIDITY)) or
-        bool(st.session_state.month_statuses.get(PARAM_CHLOROPHYLL))
+    has_partial_cache = any(
+        bool(st.session_state.downloaded_months.get(p)) or
+        bool(st.session_state.month_statuses.get(p))
+        for p in ALL_PARAMETERS
     )
     resume_btn = btn_col2.button(
         "🔄 ادامه از محل قطع",
@@ -3544,11 +3852,12 @@ def render_setup_page():
     # map therefore stays visible for the entire run and can no longer trigger a
     # rerun that would abort the processing halfway through.
     if start_btn:
-        st.session_state.downloaded_months = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-        st.session_state.month_statuses = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
-        st.session_state.results = {PARAM_TURBIDITY: [], PARAM_CHLOROPHYLL: []}
-        st.session_state.mean_data = {PARAM_TURBIDITY: {}, PARAM_CHLOROPHYLL: {}}
+        st.session_state.downloaded_months = empty_param_dict(dict)
+        st.session_state.month_statuses = empty_param_dict(dict)
+        st.session_state.results = empty_param_dict(list)
+        st.session_state.mean_data = empty_param_dict(dict)
         st.session_state.download_summary = {}
+        st.session_state.cdom_display_range = None
         st.session_state.processing_complete = False
         st.session_state.processing_in_progress = True
         st.session_state.resume_after_interruption = False
@@ -3607,9 +3916,8 @@ def render_setup_page():
                     st.warning("⚠️ داده‌ای برای این منطقه و بازه زمانی یافت نشد.")
             else:
                 # Merge with previously completed results still in session state
-                has_any = (
-                    bool(st.session_state.results.get(PARAM_TURBIDITY)) or
-                    bool(st.session_state.results.get(PARAM_CHLOROPHYLL))
+                has_any = any(
+                    bool(st.session_state.results.get(p)) for p in ALL_PARAMETERS
                 )
                 if has_any:
                     st.session_state.processing_complete = True
@@ -3644,9 +3952,11 @@ def render_setup_page():
         st.divider()
         turb_d, turb_a = st.session_state.download_summary.get(PARAM_TURBIDITY, (0, 0))
         chl_d, chl_a = st.session_state.download_summary.get(PARAM_CHLOROPHYLL, (0, 0))
+        cdom_d, cdom_a = st.session_state.download_summary.get(PARAM_CDOM, (0, 0))
         st.info(
             f"🌊 شاخص کدورت: {turb_d} تصویر از {turb_a} تصویر موجود دریافت شد.\n\n"
-            f"🌿 شاخص کلروفیل: {chl_d} تصویر از {chl_a} تصویر موجود دریافت شد."
+            f"🌿 شاخص کلروفیل: {chl_d} تصویر از {chl_a} تصویر موجود دریافت شد.\n\n"
+            f"🍂 شاخص مواد آلی محلول: {cdom_d} تصویر از {cdom_a} تصویر موجود دریافت شد."
         )
 
     # ==========================================================================
@@ -3661,15 +3971,16 @@ def render_setup_page():
             <div class="wq-ready-banner">
                 ✅ پایش با موفقیت انجام شد.<br>
                 برای مشاهده نتایج، از نوار بالای صفحه یکی از صفحه‌های
-                <b>🌊 کدورت</b>، <b>🌿 کلروفیل</b> یا <b>🤖 چت بات</b> را انتخاب کنید.
+                <b>🌊 کدورت</b>، <b>🌿 کلروفیل</b>، <b>🍂 مواد آلی</b> یا
+                <b>🤖 چت بات</b> را انتخاب کنید.
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # --- Download combined time-series (Turbidity + Chlorophyll) as one .xlsx ---
+        # --- Download combined time-series (all three indices) as one .xlsx ---
         st.download_button(
-            label="⬇️ دانلود سری زمانی کدورت (NDTI) و کلروفیل (NDCI) — یک فایل Excel",
+            label="⬇️ دانلود سری زمانی کدورت (NDTI)، کلروفیل (NDCI) و مواد آلی محلول (CDOM) — یک فایل Excel",
             data=generate_combined_timeseries_excel(),
             file_name="water_quality_timeseries.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3713,6 +4024,8 @@ def main():
         render_parameter_page(PARAM_TURBIDITY)
     elif page == 'chlorophyll':
         render_parameter_page(PARAM_CHLOROPHYLL)
+    elif page == 'cdom':
+        render_parameter_page(PARAM_CDOM)
     elif page == 'chat':
         render_expert_chat_tab()
     else:
