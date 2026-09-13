@@ -2039,6 +2039,48 @@ TAVILY_API_KEY = "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"
 OPENWEATHER_API_KEY = "5fce9bd0bcda8e2cd43468bf50755c82"
 
 
+# =============================================================================
+# خلاصه مدیریتی — the fixed question asked once, to the SAME expert agent
+# =============================================================================
+# The «خلاصه مدیریتی» page reuses the expert agent exactly as the chat page does
+# — identical system prompt, identical analysis JSON, identical tools. The only
+# difference is that instead of the user typing a question, this one fixed
+# question is sent once and its answer is cached.
+#
+# ---------------------------------------------------------------------------
+# THIS TEXT IS THE ONE THING TO EDIT if you want a different style of summary.
+# Everything else on that page is just plumbing and presentation.
+# ---------------------------------------------------------------------------
+EXECUTIVE_SUMMARY_PROMPT = """یک «خلاصه مدیریتی» از وضعیت کیفیت آب این پهنه آبی بنویس.
+
+قالب و محدودیت‌ها:
+- دقیقاً بین ۵ تا ۶ خط بنویس. هر خط یک جمله کوتاه و مستقل باشد (حداکثر حدود ۲۰ کلمه).
+- بدون عنوان، بدون تیتر، بدون فهرست شماره‌دار، بدون جدول، و بدون هیچ مقدمه‌ای مانند «بر اساس داده‌های ارائه‌شده».
+- هر خط را با یک ایموجی مرتبط شروع کن.
+- زبان فارسی ساده و روان برای یک مدیر غیرمتخصص باشد؛ هیچ اصطلاح فنی، مخفف انگلیسی یا نام شاخص
+  (NDTI، NDCI، CDOM، من-کندال، انحراف مطلق از میانه و مانند آن) به کار نبر. به‌جای آن‌ها بنویس
+  «گل‌آلودگی آب»، «رشد جلبک» و «مواد آلی محلول در آب».
+- لحن حرفه‌ای اما جذاب و خواندنی باشد؛ طوری که خواننده در همین چند خط، تصویری روشن و در عین حال
+  جالب از وضعیت این پهنه آبی به دست بیاورد و احساس کند چیز تازه‌ای یاد گرفته است.
+
+محتوای اجباری، به همین ترتیب:
+۱. نام منطقه (آن را با ابزار reverse_geocode از مختصات مرکز به دست بیاور) به‌همراه یک قضاوت کلی از
+   کیفیت آب در کل بازه پایش: خوب، قابل قبول، یا نگران‌کننده.
+۲. مهم‌ترین یا جالب‌ترین یافته‌ی این پایش؛ چیزی که برای خواننده تازگی دارد یا انتظارش را ندارد.
+۳. بدترین ماه یا فصل دوره و اینکه در آن زمان کدام جنبه‌ی کیفیت آب به اوج رسیده است؛ نام ماه را حتماً
+   به تقویم شمسی بنویس.
+۴. روند بلندمدت کیفیت آب در کل دوره با در نظر گرفتن هر سه جنبه: رو به بهبود، بدون تغییر معنادار، یا
+   رو به بدتر شدن.
+۵. یک توصیه‌ی عملی و مشخص برای مدیر؛ مثلاً بهترین زمان پایش میدانی، آمادگی تصفیه‌خانه، یا بررسی
+   منابع ورودی در حوضه آبریز.
+
+قواعد:
+- فقط بر پایه‌ی داده‌های تحلیل موجود بنویس؛ هیچ عدد، ماه یا رویدادی را از خودت نساز.
+- اگر داده‌ی یکی از جنبه‌ها برای نتیجه‌گیری کافی نیست، آن را کوتاه و صادقانه بگو، اما خلاصه را از ۶ خط
+  بلندتر نکن.
+- عدد کم بیاور؛ فقط جایی که واقعاً به درک مدیر کمک می‌کند."""
+
+
 def _build_agent_system_prompt(analysis_json):
     """
     Persian system prompt for the water-quality expert agent. Combines the
@@ -2450,6 +2492,119 @@ def _inject_persian_chat_css():
     )
 
 
+def _ensure_expert_analysis():
+    """
+    Make sure the statistical-analysis JSON for the current monitoring results
+    exists in session state, recomputing it when the results have changed.
+
+    Shared by «خلاصه مدیریتی» and «چت بات» so both always talk to the agent
+    about exactly the same analysis. Returns True when the JSON is ready.
+    """
+    if 'expert_analysis_json' not in st.session_state:
+        st.session_state.expert_analysis_json = None
+    if 'expert_analysis_signature' not in st.session_state:
+        st.session_state.expert_analysis_signature = None
+
+    if not any(st.session_state.results.get(p) for p in ALL_PARAMETERS):
+        return False
+
+    signature = _expert_results_signature()
+    if (st.session_state.expert_analysis_json is not None
+            and st.session_state.expert_analysis_signature == signature):
+        return True
+
+    with st.spinner("در حال تحلیل آماری داده‌های سری زمانی..."):
+        try:
+            excel_bytes = generate_combined_timeseries_excel()
+            analysis = analyze_water_quality_from_bytes(excel_bytes)
+            st.session_state.expert_analysis_json = json.dumps(analysis, ensure_ascii=False, indent=2)
+            st.session_state.expert_analysis_signature = signature
+            # The data changed -> anything derived from it is stale
+            st.session_state.expert_chat_history = []
+            st.session_state.executive_summary = None
+            st.session_state.executive_summary_signature = None
+        except Exception as e:
+            st.error(f"خطا در تحلیل داده‌ها: {e}")
+            return False
+
+    return True
+
+
+def _render_summary_card(summary_text):
+    """Render the 5-6 line summary as one readable RTL card, a line per row."""
+    import html as _html
+
+    lines = [ln.strip() for ln in str(summary_text).splitlines()]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        lines = [str(summary_text).strip()]
+
+    rows = "".join(
+        f'<div class="wq-summary-line">{_html.escape(ln)}</div>' for ln in lines
+    )
+    st.markdown(f'<div class="wq-summary-card">{rows}</div>', unsafe_allow_html=True)
+
+
+def render_summary_page():
+    """
+    صفحه «خلاصه مدیریتی»: همان عامل متخصص و همان دستور سیستمی صفحه چت، اما با یک
+    پرسش ثابت (EXECUTIVE_SUMMARY_PROMPT) که فقط یک بار اجرا و نتیجه‌اش ذخیره
+    می‌شود. خروجی، یک خلاصه ۵ تا ۶ خطی و ساده برای مدیر است که هر سه شاخص را با
+    هم می‌بیند.
+    """
+    _render_active_section_badge("🧭", "خلاصه مدیریتی کیفیت آب", "#14507A", "#4A9BD4")
+
+    if 'executive_summary' not in st.session_state:
+        st.session_state.executive_summary = None
+    if 'executive_summary_signature' not in st.session_state:
+        st.session_state.executive_summary_signature = None
+
+    if not any(st.session_state.results.get(p) for p in ALL_PARAMETERS):
+        st.info("برای مشاهده خلاصه مدیریتی، ابتدا پایش را اجرا کنید.")
+        return
+
+    if not _ensure_expert_analysis():
+        return
+
+    signature = _expert_results_signature()
+    is_stale = (
+        st.session_state.executive_summary is None
+        or st.session_state.executive_summary_signature != signature
+    )
+
+    regenerate = st.button(
+        "🔄 بازتولید خلاصه",
+        key="summary_regenerate",
+        help="یک خلاصه تازه از متخصص هوش مصنوعی بگیرید",
+    )
+
+    # Generated once per monitoring run and then cached, so simply switching
+    # between pages never costs another call to the language model.
+    if is_stale or regenerate:
+        with st.spinner("در حال تهیه خلاصه مدیریتی توسط متخصص هوش مصنوعی..."):
+            try:
+                summary = ask_water_quality_expert(
+                    EXECUTIVE_SUMMARY_PROMPT,
+                    st.session_state.expert_analysis_json,
+                    []   # a standalone question: no chat history
+                )
+                st.session_state.executive_summary = summary
+                st.session_state.executive_summary_signature = signature
+            except Exception as e:
+                st.error(
+                    "خلاصه مدیریتی تهیه نشد (خطا در ارتباط با متخصص هوش مصنوعی): "
+                    f"{e}"
+                )
+                return
+
+    if st.session_state.executive_summary:
+        _render_summary_card(st.session_state.executive_summary)
+        st.caption(
+            "این خلاصه به‌طور خودکار از تحلیل آماری هر سه شاخص کدورت، کلروفیل و مواد آلی محلول "
+            "تهیه شده است. برای پرسش‌های دقیق‌تر، از صفحه «چت بات» استفاده کنید."
+        )
+
+
 def render_expert_chat_tab():
     """
     صفحه «نظر متخصص آب»: به‌صورت خودکار خروجی اکسل پایش را می‌گیرد، پایپ‌لاین
@@ -2469,27 +2624,14 @@ def render_expert_chat_tab():
 
     if 'expert_chat_history' not in st.session_state:
         st.session_state.expert_chat_history = []
-    if 'expert_analysis_json' not in st.session_state:
-        st.session_state.expert_analysis_json = None
-    if 'expert_analysis_signature' not in st.session_state:
-        st.session_state.expert_analysis_signature = None
 
     if not any(st.session_state.results.get(p) for p in ALL_PARAMETERS):
         st.info("برای استفاده از این بخش، ابتدا پایش را اجرا کنید تا داده‌ای برای تحلیل وجود داشته باشد.")
         return
 
-    signature = _expert_results_signature()
-    if st.session_state.expert_analysis_json is None or st.session_state.expert_analysis_signature != signature:
-        with st.spinner("در حال تحلیل آماری داده‌های سری زمانی..."):
-            try:
-                excel_bytes = generate_combined_timeseries_excel()
-                analysis = analyze_water_quality_from_bytes(excel_bytes)
-                st.session_state.expert_analysis_json = json.dumps(analysis, ensure_ascii=False, indent=2)
-                st.session_state.expert_analysis_signature = signature
-                st.session_state.expert_chat_history = []  # data changed -> start a fresh conversation
-            except Exception as e:
-                st.error(f"خطا در تحلیل داده‌ها: {e}")
-                return
+    # Same analysis JSON the «خلاصه مدیریتی» page uses
+    if not _ensure_expert_analysis():
+        return
 
     with st.expander("📄 خلاصه تحلیل (JSON) ارسال‌شده به متخصص هوش مصنوعی"):
         st.code(st.session_state.expert_analysis_json, language="json")
@@ -3210,6 +3352,31 @@ def _inject_global_app_css():
             line-height: 1.9;
         }
 
+        /* ---- خلاصه مدیریتی card (one line per row, large and readable) ---- */
+        .wq-summary-card {
+            direction: rtl;
+            text-align: right;
+            background: linear-gradient(160deg, #FFFFFF 0%, #F4FBFC 100%);
+            border: 1px solid var(--wq-border);
+            border-right: 7px solid var(--wq-teal);
+            border-radius: 18px;
+            padding: 1.5rem 1.8rem;
+            margin: 0.4rem 0 1.1rem 0;
+            box-shadow: 0 5px 20px rgba(10, 63, 74, 0.10);
+        }
+        .wq-summary-line {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.42rem;
+            font-weight: 600;
+            line-height: 2.15;
+            color: var(--wq-navy);
+            padding: 0.45rem 0;
+            border-bottom: 1px dashed #DCEEF1;
+        }
+        .wq-summary-line:last-child {
+            border-bottom: none;
+        }
+
         /* ---- Slightly larger download / action buttons ---- */
         .stDownloadButton > button p {
             font-size: 1.2rem !important;
@@ -3328,6 +3495,7 @@ NAV_PAGES = [
     ("turbidity",   "🌊", "کدورت"),
     ("chlorophyll", "🌿", "کلروفیل"),
     ("cdom",        "🍂", "مواد آلی"),
+    ("summary",     "🧭", "خلاصه"),
     ("chat",        "🤖", "چت بات"),
 ]
 
@@ -3438,6 +3606,8 @@ def _render_status_strip():
             st.session_state.pending_run = None
             st.session_state.expert_analysis_json = None
             st.session_state.expert_analysis_signature = None
+            st.session_state.executive_summary = None
+            st.session_state.executive_summary_signature = None
             st.session_state.expert_chat_history = []
             st.session_state.active_page = 'setup'
             st.rerun()
@@ -4248,8 +4418,8 @@ def render_setup_page():
             <div class="wq-ready-banner">
                 ✅ پایش با موفقیت انجام شد.<br>
                 برای مشاهده نتایج، از نوار بالای صفحه یکی از صفحه‌های
-                <b>🌊 کدورت</b>، <b>🌿 کلروفیل</b>، <b>🍂 مواد آلی</b> یا
-                <b>🤖 چت بات</b> را انتخاب کنید.
+                <b>🌊 کدورت</b>، <b>🌿 کلروفیل</b>، <b>🍂 مواد آلی</b>،
+                <b>🧭 خلاصه</b> یا <b>🤖 چت بات</b> را انتخاب کنید.
             </div>
             """,
             unsafe_allow_html=True,
@@ -4303,6 +4473,8 @@ def main():
         render_parameter_page(PARAM_CHLOROPHYLL)
     elif page == 'cdom':
         render_parameter_page(PARAM_CDOM)
+    elif page == 'summary':
+        render_summary_page()
     elif page == 'chat':
         render_expert_chat_tab()
     else:
