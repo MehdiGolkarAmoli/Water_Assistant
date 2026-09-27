@@ -1276,7 +1276,7 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
             turb_results, turb_mean, turb_downloaded, turb_available = process_single_parameter(
                 aoi, start_date, end_date, PARAM_TURBIDITY, temp_dir,
                 cloudy_pixel_percentage, scale, resume=resume,
-                progress_callback=make_progress_callback("🌊 مرحله ۱ از ۳ — شاخص کدورت (NDTI)", 0)
+                progress_callback=make_progress_callback("🌊 مرحله ۱ از ۳ — شاخص کدورت آب", 0)
             )
         except Exception:
             pass  # Partial or zero results; pipeline continues to chlorophyll
@@ -1325,7 +1325,7 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
                 aoi, start_date, end_date, PARAM_CDOM, temp_dir,
                 cloudy_pixel_percentage, scale, resume=resume,
                 progress_callback=make_progress_callback(
-                    "🍂 مرحله ۳ از ۳ — شاخص مواد آلی محلول (CDOM)", total_months * 2
+                    "🍂 مرحله ۳ از ۳ — شاخص مواد آلی محلول", total_months * 2
                 )
             )
         except Exception:
@@ -1441,7 +1441,7 @@ def render_chlorophyll_guidance_panel():
 
 def render_cdom_guidance_panel():
     """Permanently visible legend + management guidance for CDOM."""
-    st.markdown("### 🎨 راهنمای رنگ و تفسیر مدیریتی — شاخص مواد آلی محلول رنگی (CDOM)")
+    st.markdown("### 🎨 راهنمای رنگ و تفسیر مدیریتی — شاخص مواد آلی محلول رنگی")
 
     col_legend, col_text = st.columns([1, 2])
 
@@ -1508,31 +1508,176 @@ def display_side_by_side_imagery(results, parameter_type):
         cols[1].image(r['rgb_image'], caption=f"{r['month_name']} — تصویر طبیعی (RGB)", use_container_width=True)
 
 
-# Persian text inside a matplotlib figure needs the letters joined and the
-# string reordered right-to-left; matplotlib does neither on its own, which is
-# why Persian axis labels used to come out as disconnected, reversed letters.
-# arabic_reshaper + python-bidi fix that. They are optional: without them the
-# chart still renders, just with the old unshaped text.
-#     pip install arabic-reshaper python-bidi
-_FA_SHAPER = None   # None = not probed yet, False = unavailable, else callable
+# =============================================================================
+# Persian text for matplotlib figures
+# =============================================================================
+# Matplotlib draws the characters it is given, in the order it is given them.
+# It does NOT join Arabic-script letters into their connected forms and does NOT
+# reorder the string right-to-left, which is why Persian axis labels came out as
+# a string of disconnected, back-to-front letters.
+#
+# The two fixes below are done here in pure Python so the app needs no extra
+# packages installed on the server:
+#   1. reshaping  - swap every letter for its isolated / initial / medial /
+#                   final presentation form depending on its neighbours
+#                   (Unicode Arabic Presentation Forms-B, which B Nazanin,
+#                   Vazirmatn and even the DejaVu fallback all contain).
+#   2. reordering - reverse the string for right-to-left display, keeping any
+#                   embedded Latin/number runs in their own order and mirroring
+#                   brackets.
+# If the optional arabic_reshaper / python-bidi packages happen to be installed
+# they are preferred, since they implement the full Unicode algorithms.
+# =============================================================================
+
+# letter: (isolated, final, initial, medial) — None where the form does not exist
+_FA_FORMS = {
+    '\u0621': ('\uFE80', None, None, None),                  # ء
+    '\u0622': ('\uFE81', '\uFE82', None, None),              # آ
+    '\u0623': ('\uFE83', '\uFE84', None, None),              # أ
+    '\u0624': ('\uFE85', '\uFE86', None, None),              # ؤ
+    '\u0625': ('\uFE87', '\uFE88', None, None),              # إ
+    '\u0626': ('\uFE89', '\uFE8A', '\uFE8B', '\uFE8C'),     # ئ
+    '\u0627': ('\uFE8D', '\uFE8E', None, None),              # ا
+    '\u0628': ('\uFE8F', '\uFE90', '\uFE91', '\uFE92'),     # ب
+    '\u0629': ('\uFE93', '\uFE94', None, None),              # ة
+    '\u062A': ('\uFE95', '\uFE96', '\uFE97', '\uFE98'),     # ت
+    '\u062B': ('\uFE99', '\uFE9A', '\uFE9B', '\uFE9C'),     # ث
+    '\u062C': ('\uFE9D', '\uFE9E', '\uFE9F', '\uFEA0'),     # ج
+    '\u062D': ('\uFEA1', '\uFEA2', '\uFEA3', '\uFEA4'),     # ح
+    '\u062E': ('\uFEA5', '\uFEA6', '\uFEA7', '\uFEA8'),     # خ
+    '\u062F': ('\uFEA9', '\uFEAA', None, None),              # د
+    '\u0630': ('\uFEAB', '\uFEAC', None, None),              # ذ
+    '\u0631': ('\uFEAD', '\uFEAE', None, None),              # ر
+    '\u0632': ('\uFEAF', '\uFEB0', None, None),              # ز
+    '\u0633': ('\uFEB1', '\uFEB2', '\uFEB3', '\uFEB4'),     # س
+    '\u0634': ('\uFEB5', '\uFEB6', '\uFEB7', '\uFEB8'),     # ش
+    '\u0635': ('\uFEB9', '\uFEBA', '\uFEBB', '\uFEBC'),     # ص
+    '\u0636': ('\uFEBD', '\uFEBE', '\uFEBF', '\uFEC0'),     # ض
+    '\u0637': ('\uFEC1', '\uFEC2', '\uFEC3', '\uFEC4'),     # ط
+    '\u0638': ('\uFEC5', '\uFEC6', '\uFEC7', '\uFEC8'),     # ظ
+    '\u0639': ('\uFEC9', '\uFECA', '\uFECB', '\uFECC'),     # ع
+    '\u063A': ('\uFECD', '\uFECE', '\uFECF', '\uFED0'),     # غ
+    '\u0640': ('\u0640', '\u0640', '\u0640', '\u0640'),     # ـ (tatweel)
+    '\u0641': ('\uFED1', '\uFED2', '\uFED3', '\uFED4'),     # ف
+    '\u0642': ('\uFED5', '\uFED6', '\uFED7', '\uFED8'),     # ق
+    '\u0643': ('\uFED9', '\uFEDA', '\uFEDB', '\uFEDC'),     # ك
+    '\u0644': ('\uFEDD', '\uFEDE', '\uFEDF', '\uFEE0'),     # ل
+    '\u0645': ('\uFEE1', '\uFEE2', '\uFEE3', '\uFEE4'),     # م
+    '\u0646': ('\uFEE5', '\uFEE6', '\uFEE7', '\uFEE8'),     # ن
+    '\u0647': ('\uFEE9', '\uFEEA', '\uFEEB', '\uFEEC'),     # ه
+    '\u0648': ('\uFEED', '\uFEEE', None, None),              # و
+    '\u0649': ('\uFEEF', '\uFEF0', None, None),              # ى
+    '\u064A': ('\uFEF1', '\uFEF2', '\uFEF3', '\uFEF4'),     # ي
+    '\u067E': ('\uFB56', '\uFB57', '\uFB58', '\uFB59'),     # پ
+    '\u0686': ('\uFB7A', '\uFB7B', '\uFB7C', '\uFB7D'),     # چ
+    '\u0698': ('\uFB8A', '\uFB8B', None, None),              # ژ
+    '\u06A9': ('\uFB8E', '\uFB8F', '\uFB90', '\uFB91'),     # ک
+    '\u06AF': ('\uFB92', '\uFB93', '\uFB94', '\uFB95'),     # گ
+    '\u06C0': ('\uFBA4', '\uFBA5', None, None),              # ۀ
+    '\u06CC': ('\uFBFC', '\uFBFD', '\uFBFE', '\uFBFF'),     # ی
+}
+
+# ل followed by an alef becomes a single ligature: (isolated, final)
+_FA_LAM_ALEF = {
+    '\u0622': ('\uFEF5', '\uFEF6'),   # لآ
+    '\u0623': ('\uFEF7', '\uFEF8'),   # لأ
+    '\u0625': ('\uFEF9', '\uFEFA'),   # لإ
+    '\u0627': ('\uFEFB', '\uFEFC'),   # لا
+}
+
+# Characters that swap sides when the string is reversed for display
+_FA_MIRROR = {'(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{',
+              '\u00AB': '\u00BB', '\u00BB': '\u00AB', '<': '>', '>': '<'}
+
+# Vowel marks: they do not take part in joining and are dropped for plotting
+_FA_DIACRITICS = set('\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0653\u0654\u0655\u0670')
+
+
+def _fa_reshape(text):
+    """Swap each Persian letter for the connected form its neighbours require."""
+    chars = [c for c in str(text) if c not in _FA_DIACRITICS]
+    out = []
+    i = 0
+    prev_links_forward = False   # did the previous letter end in a joining form?
+
+    while i < len(chars):
+        ch = chars[i]
+        forms = _FA_FORMS.get(ch)
+
+        if forms is None:
+            out.append(ch)
+            prev_links_forward = False
+            i += 1
+            continue
+
+        # ل + alef -> one ligature glyph
+        if ch == '\u0644' and i + 1 < len(chars) and chars[i + 1] in _FA_LAM_ALEF:
+            isolated, final = _FA_LAM_ALEF[chars[i + 1]]
+            out.append(final if prev_links_forward else isolated)
+            prev_links_forward = False   # alef never joins to what follows
+            i += 2
+            continue
+
+        nxt = chars[i + 1] if i + 1 < len(chars) else None
+        next_is_letter = nxt in _FA_FORMS if nxt else False
+
+        isolated, final, initial, medial = forms
+        if prev_links_forward and next_is_letter and medial:
+            glyph = medial
+        elif prev_links_forward and final:
+            glyph = final
+        elif next_is_letter and initial:
+            glyph = initial
+        else:
+            glyph = isolated
+
+        out.append(glyph)
+        # A letter links to the next one only if it has initial/medial forms
+        prev_links_forward = bool(initial) and next_is_letter
+        i += 1
+
+    return ''.join(out)
+
+
+def _fa_rtl(text):
+    """Reverse for right-to-left display, keeping Latin/number runs readable."""
+    reversed_chars = [_FA_MIRROR.get(c, c) for c in reversed(str(text))]
+
+    def is_ltr(c):
+        return c.isascii() and (c.isalnum() or c in '.:/+-%')
+
+    out = []
+    i = 0
+    while i < len(reversed_chars):
+        if is_ltr(reversed_chars[i]):
+            j = i
+            while j < len(reversed_chars) and is_ltr(reversed_chars[j]):
+                j += 1
+            out.extend(reversed(reversed_chars[i:j]))   # undo the reversal
+            i = j
+        else:
+            out.append(reversed_chars[i])
+            i += 1
+    return ''.join(out)
+
+
+_FA_SHAPER = None   # None = not probed yet, else the callable actually used
 
 
 def _fa(text):
-    """Return `text` shaped and reordered for correct Persian rendering."""
+    """Return `text` ready to be drawn correctly inside a matplotlib figure."""
     global _FA_SHAPER
     if _FA_SHAPER is None:
-        try:
+        try:   # the full Unicode implementations, when available
             import arabic_reshaper
             from bidi.algorithm import get_display
             _FA_SHAPER = lambda s: get_display(arabic_reshaper.reshape(s))
-        except Exception:
-            _FA_SHAPER = False
-    if _FA_SHAPER:
-        try:
-            return _FA_SHAPER(str(text))
-        except Exception:
-            return str(text)
-    return str(text)
+        except Exception:   # built-in fallback — no extra packages needed
+            _FA_SHAPER = lambda s: _fa_rtl(_fa_reshape(s))
+    try:
+        return _FA_SHAPER(str(text))
+    except Exception:
+        return str(text)
 
 
 def display_time_series_chart(results, parameter_type):
@@ -1797,9 +1942,9 @@ def render_parameter_page(parameter_type):
     4. Side-by-side imagery (collapsible)
     """
     if parameter_type == PARAM_TURBIDITY:
-        _render_active_section_badge("🌊", "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
+        _render_active_section_badge("🌊", "کدورت آب", "#0B6E76", "#2FC2CE")
     elif parameter_type == PARAM_CDOM:
-        _render_active_section_badge("🍂", "مواد آلی محلول رنگی (CDOM)", "#7A4A12", "#D9A05B")
+        _render_active_section_badge("🍂", "مواد آلی محلول رنگی", "#7A4A12", "#D9A05B")
     else:
         _render_active_section_badge("🌿", "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
 
@@ -2646,15 +2791,10 @@ def render_summary_page():
         or st.session_state.executive_summary_signature != signature
     )
 
-    regenerate = st.button(
-        "🔄 بازتولید خلاصه",
-        key="summary_regenerate",
-        help="یک خلاصه تازه از متخصص هوش مصنوعی بگیرید",
-    )
-
     # Generated once per monitoring run and then cached, so simply switching
-    # between pages never costs another call to the language model.
-    if is_stale or regenerate:
+    # between pages never costs another call to the language model. It is
+    # refreshed automatically whenever the monitoring results change.
+    if is_stale:
         with st.spinner("در حال تهیه خلاصه مدیریتی توسط متخصص هوش مصنوعی..."):
             try:
                 summary = ask_water_quality_expert(
@@ -4511,7 +4651,7 @@ def render_setup_page():
 
         # --- Download combined time-series (all three indices) as one .xlsx ---
         st.download_button(
-            label="⬇️ دانلود سری زمانی کدورت (NDTI)، کلروفیل (NDCI) و مواد آلی محلول (CDOM) — یک فایل Excel",
+            label="⬇️ دانلود سری زمانی کدورت آب، کلروفیل و مواد آلی محلول — یک فایل اکسل",
             data=generate_combined_timeseries_excel(),
             file_name="water_quality_timeseries.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
