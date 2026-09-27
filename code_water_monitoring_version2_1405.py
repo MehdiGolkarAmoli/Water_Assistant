@@ -114,12 +114,25 @@ def empty_param_dict(factory=dict):
 
 
 def param_short_name(parameter_type):
-    """Short technical label used in captions, tables and the Excel export."""
+    """Short technical label. Internal use only (file names, Excel export)."""
     if parameter_type == PARAM_TURBIDITY:
         return "NDTI"
     if parameter_type == PARAM_CHLOROPHYLL:
         return "Chl-a"
     return "CDOM"
+
+
+def param_persian_name(parameter_type):
+    """
+    Persian name shown to the user. Everything the end user reads on a
+    parameter page — statistics summary, monthly table, image captions and
+    chart labels — uses this instead of the English abbreviations.
+    """
+    if parameter_type == PARAM_TURBIDITY:
+        return "کدورت"
+    if parameter_type == PARAM_CHLOROPHYLL:
+        return "کلروفیل"
+    return "مواد آلی محلول"
 
 
 def param_decimals(parameter_type):
@@ -1485,18 +1498,45 @@ def display_side_by_side_imagery(results, parameter_type):
         st.info("داده‌ای برای نمایش در این بازه زمانی وجود ندارد.")
         return
 
-    param_short = param_short_name(parameter_type)
+    param_fa = param_persian_name(parameter_type)
 
     for r in results:
         mean_str = format_param_value(parameter_type, r['mean_value'], empty="بدون داده")
 
         cols = st.columns(2)
-        cols[0].image(r['wq_image'], caption=f"{r['month_name']} — {param_short}: {mean_str}", use_container_width=True)
+        cols[0].image(r['wq_image'], caption=f"{r['month_name']} — {param_fa}: {mean_str}", use_container_width=True)
         cols[1].image(r['rgb_image'], caption=f"{r['month_name']} — تصویر طبیعی (RGB)", use_container_width=True)
 
 
+# Persian text inside a matplotlib figure needs the letters joined and the
+# string reordered right-to-left; matplotlib does neither on its own, which is
+# why Persian axis labels used to come out as disconnected, reversed letters.
+# arabic_reshaper + python-bidi fix that. They are optional: without them the
+# chart still renders, just with the old unshaped text.
+#     pip install arabic-reshaper python-bidi
+_FA_SHAPER = None   # None = not probed yet, False = unavailable, else callable
+
+
+def _fa(text):
+    """Return `text` shaped and reordered for correct Persian rendering."""
+    global _FA_SHAPER
+    if _FA_SHAPER is None:
+        try:
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+            _FA_SHAPER = lambda s: get_display(arabic_reshaper.reshape(s))
+        except Exception:
+            _FA_SHAPER = False
+    if _FA_SHAPER:
+        try:
+            return _FA_SHAPER(str(text))
+        except Exception:
+            return str(text)
+    return str(text)
+
+
 def display_time_series_chart(results, parameter_type):
-    """Time series chart of mean index values directly under the imagery."""
+    """Time series chart of mean index values, shown right under the legend."""
     if not results:
         return
 
@@ -1505,17 +1545,18 @@ def display_time_series_chart(results, parameter_type):
     # not installed on the machine rendering the figure).
     PERSIAN_FONT = ['B Nazanin', 'BNazanin', 'Vazirmatn', 'Tahoma', 'DejaVu Sans']
 
+    # Axis labels, title and legend are fully Persian — no index abbreviations.
     if parameter_type == PARAM_TURBIDITY:
-        param_label_fa = "شاخص کدورت آب (NDTI)"
+        param_label_fa = "کدورت آب"
         param_unit = ""
         chart_title = "روند زمانی کدورت آب"
     elif parameter_type == PARAM_CDOM:
-        param_label_fa = "شاخص مواد آلی محلول (CDOM)"
+        param_label_fa = "مواد آلی محلول"
         param_unit = " (بر متر)"
         chart_title = "روند زمانی مواد آلی محلول رنگی"
     else:
-        param_label_fa = "شاخص کلروفیل (NDCI)"
-        param_unit = " (µg/L)"
+        param_label_fa = "کلروفیل"
+        param_unit = " (میکروگرم بر لیتر)"
         chart_title = "روند زمانی کلروفیل"
 
     months = []
@@ -1532,24 +1573,32 @@ def display_time_series_chart(results, parameter_type):
 
     valid_values = [m for m in mean_values if m != 0]
 
-    fig, ax1 = plt.subplots(figsize=(12, 5))
+    # A higher dpi is what makes the exported figure crisp instead of soft.
+    fig, ax1 = plt.subplots(figsize=(12, 5.2), dpi=170)
+    fig.patch.set_facecolor('white')
+    ax1.set_facecolor('#FCFEFE')
 
     color1 = {
-        PARAM_TURBIDITY: '#1f77b4',
-        PARAM_CHLOROPHYLL: '#228B22',
+        PARAM_TURBIDITY: '#0E6E93',
+        PARAM_CHLOROPHYLL: '#1B7A3D',
         PARAM_CDOM: '#8C510A',
     }[parameter_type]
-    ax1.set_xlabel('ماه', fontsize=13, fontfamily=PERSIAN_FONT)
-    ax1.set_ylabel(f'میانگین {param_label_fa}{param_unit}', color=color1, fontsize=13, fontfamily=PERSIAN_FONT)
+
+    ax1.set_xlabel(_fa('ماه'), fontsize=14, fontfamily=PERSIAN_FONT, labelpad=10)
+    ax1.set_ylabel(_fa(f'میانگین {param_label_fa}{param_unit}'),
+                   color=color1, fontsize=14, fontfamily=PERSIAN_FONT, labelpad=10)
 
     if valid_values:
-        ax1.plot(months, mean_values, 'o-', color=color1, linewidth=2, markersize=8,
-                  label=f'میانگین {param_label_fa}')
-        ax1.tick_params(axis='y', labelcolor=color1)
+        ax1.plot(months, mean_values, marker='o', color=color1, linewidth=2.6,
+                 markersize=8, markerfacecolor='white', markeredgewidth=2.2,
+                 markeredgecolor=color1, zorder=3,
+                 label=_fa(f'میانگین {param_label_fa}'))
+        ax1.tick_params(axis='y', labelcolor=color1, labelsize=11)
 
         if parameter_type == PARAM_TURBIDITY:
             ax1.set_ylim(min(mean_values) - 0.02, max(mean_values) + 0.02)
-            ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5, label='خط خنثی (کدورت = ۰)')
+            ax1.axhline(y=0, color='#94A6AA', linestyle='--', linewidth=1.2, alpha=0.8,
+                        zorder=1, label=_fa('خط خنثی (کدورت = صفر)'))
         elif parameter_type == PARAM_CDOM:
             # CDOM is an absorption coefficient, not a normalized index: it is
             # always positive and has no meaningful "neutral" line at zero, so
@@ -1568,26 +1617,49 @@ def display_time_series_chart(results, parameter_type):
             val_max = max(mean_values)
             padding = max((val_max - val_min) * 0.15, 0.02)
             ax1.set_ylim(val_min - padding, val_max + padding)
-            ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.4, label='خط خنثی (کلروفیل = ۰)')
+            ax1.axhline(y=0, color='#94A6AA', linestyle='--', linewidth=1.2, alpha=0.8,
+                        zorder=1, label=_fa('خط خنثی (کلروفیل = صفر)'))
     else:
-        ax1.text(0.5, 0.5, 'داده معتبری موجود نیست', ha='center', va='center',
-                  transform=ax1.transAxes, fontsize=12, fontfamily=PERSIAN_FONT)
+        ax1.text(0.5, 0.5, _fa('داده معتبری موجود نیست'), ha='center', va='center',
+                 transform=ax1.transAxes, fontsize=13, fontfamily=PERSIAN_FONT)
 
-    ax1.set_xticklabels(months, rotation=45, ha='right')
-    ax1.grid(True, alpha=0.3)
+    ax1.grid(True, axis='y', alpha=0.28, linestyle='--', linewidth=0.9, zorder=0)
+    ax1.set_axisbelow(True)
+    for side in ('top', 'right'):
+        ax1.spines[side].set_visible(False)
+    for side in ('left', 'bottom'):
+        ax1.spines[side].set_color('#C8DDE1')
 
     ax1_twin = ax1.twinx()
-    color2 = '#2ca02c'
-    ax1_twin.set_ylabel('پوشش آب (٪)', color=color2, fontsize=13, fontfamily=PERSIAN_FONT)
-    ax1_twin.bar(months, coverage_values, alpha=0.3, color=color2, label='پوشش آب')
-    ax1_twin.tick_params(axis='y', labelcolor=color2)
+    color2 = '#2E9E5B'
+    ax1_twin.set_ylabel(_fa('پوشش آب (درصد)'), color=color2, fontsize=14,
+                        fontfamily=PERSIAN_FONT, labelpad=10)
+    ax1_twin.bar(months, coverage_values, alpha=0.22, color=color2, width=0.6,
+                 zorder=0, label=_fa('پوشش آب'))
+    ax1_twin.tick_params(axis='y', labelcolor=color2, labelsize=11)
     ax1_twin.set_ylim(0, max(coverage_values) * 1.3 if max(coverage_values) > 0 else 100)
+    ax1_twin.spines['top'].set_visible(False)
+    ax1_twin.spines['right'].set_color('#C8DDE1')
 
-    ax1.set_title(chart_title, fontsize=15, fontweight='bold', fontfamily=PERSIAN_FONT)
-    legend = ax1.legend(loc='upper left', prop={'family': PERSIAN_FONT, 'size': 10})
+    # Thin out the month labels when the period is long, so they stay readable
+    step = 1 if len(months) <= 18 else (2 if len(months) <= 36 else 3)
+    ax1.set_xticks(range(0, len(months), step))
+    ax1.set_xticklabels([months[i] for i in range(0, len(months), step)],
+                        rotation=45, ha='right', fontsize=10)
+
+    ax1.set_title(_fa(chart_title), fontsize=17, fontweight='bold',
+                  fontfamily=PERSIAN_FONT, pad=16, color='#0A3F4A')
+
+    # One legend for both axes (the water-coverage bars used to be left out)
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax1_twin.get_legend_handles_labels()
+    if handles1 or handles2:
+        ax1.legend(handles1 + handles2, labels1 + labels2, loc='upper left',
+                   prop={'family': PERSIAN_FONT, 'size': 11},
+                   framealpha=0.92, edgecolor='#C8DDE1')
 
     plt.tight_layout()
-    st.pyplot(fig)
+    st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
 
@@ -1596,7 +1668,7 @@ def display_statistics_summary(results, parameter_type):
     if not results:
         return
 
-    param_short = param_short_name(parameter_type)
+    param_fa = param_persian_name(parameter_type)
 
     months = [r['month_name'] for r in results]
     mean_values = [r['mean_value'] if not np.isnan(r['mean_value']) else 0 for r in results]
@@ -1608,13 +1680,13 @@ def display_statistics_summary(results, parameter_type):
     col1, col2, col3, col4 = st.columns(4)
 
     if valid_values:
-        col1.metric(f"میانگین {param_short}", format_param_value(parameter_type, np.mean(valid_values)))
-        col2.metric(f"حداکثر {param_short}", format_param_value(parameter_type, np.max(valid_values)))
-        col3.metric(f"حداقل {param_short}", format_param_value(parameter_type, np.min(valid_values)))
+        col1.metric(f"میانگین {param_fa}", format_param_value(parameter_type, np.mean(valid_values)))
+        col2.metric(f"حداکثر {param_fa}", format_param_value(parameter_type, np.max(valid_values)))
+        col3.metric(f"حداقل {param_fa}", format_param_value(parameter_type, np.min(valid_values)))
     else:
-        col1.metric(f"میانگین {param_short}", "—")
-        col2.metric(f"حداکثر {param_short}", "—")
-        col3.metric(f"حداقل {param_short}", "—")
+        col1.metric(f"میانگین {param_fa}", "—")
+        col2.metric(f"حداکثر {param_fa}", "—")
+        col3.metric(f"حداقل {param_fa}", "—")
 
     col4.metric("میانگین پوشش آب", f"{np.mean(coverage_values):.1f}%")
 
@@ -1627,7 +1699,7 @@ def display_statistics_summary(results, parameter_type):
 
         df = pd.DataFrame({
             'ماه': months,
-            f'میانگین {param_short}': value_col,
+            f'میانگین {param_fa}': value_col,
             'پوشش آب (%)': [f"{v:.1f}" for v in coverage_values]
         })
         _render_persian_dataframe_html(df)
@@ -1721,8 +1793,8 @@ def render_parameter_page(parameter_type):
     Full page for one parameter, in the required order:
     1. Statistics Summary (خلاصه آماری)
     2. Legend + Management Guidance Panel
-    3. Side-by-side imagery (collapsible)
-    4. Time-series chart
+    3. Time-series chart
+    4. Side-by-side imagery (collapsible)
     """
     if parameter_type == PARAM_TURBIDITY:
         _render_active_section_badge("🌊", "کدورت آب (NDTI)", "#0B6E76", "#2FC2CE")
@@ -1750,11 +1822,13 @@ def render_parameter_page(parameter_type):
         st.info("برای مشاهده نتایج، ابتدا یک منطقه را انتخاب و پایش را اجرا کنید.")
         return
 
-    with st.expander("🖼️ تصاویر پردازش‌شده (برای نمایش/پنهان‌سازی کلیک کنید)", expanded=False):
-        display_side_by_side_imagery(results, parameter_type)
+    # Time-series chart first (right after the legend), processed imagery after
+    display_time_series_chart(results, parameter_type)
 
     st.divider()
-    display_time_series_chart(results, parameter_type)
+
+    with st.expander("🖼️ تصاویر پردازش‌شده (برای نمایش/پنهان‌سازی کلیک کنید)", expanded=False):
+        display_side_by_side_imagery(results, parameter_type)
 
 
 # =============================================================================
@@ -2633,9 +2707,6 @@ def render_expert_chat_tab():
     if not _ensure_expert_analysis():
         return
 
-    with st.expander("📄 خلاصه تحلیل (JSON) ارسال‌شده به متخصص هوش مصنوعی"):
-        st.code(st.session_state.expert_analysis_json, language="json")
-
     if st.button("🗑️ شروع گفتگوی جدید", key="expert_chat_reset"):
         st.session_state.expert_chat_history = []
         st.rerun()
@@ -3192,8 +3263,12 @@ def _inject_global_app_css():
         [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"],
         .element-container:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"],
         [data-testid="stElementContainer"]:has(.wq-nav-anchor) + div[data-testid="stHorizontalBlock"] {
-            direction: rtl;
-            flex-direction: row-reverse;
+            /* NOTE: the right-to-left tab order is done in Python (the columns
+               are filled from the right), NOT here. The old rule set both
+               `direction: rtl` and `flex-direction: row-reverse`, and the two
+               reversals cancelled each other out — which is why «تعریف پایش»
+               ended up on the left. Neither is set now, so the order depends
+               only on the code and cannot flip back. */
             gap: 0.55rem !important;
             background: rgba(255, 255, 255, 0.72);
             border: 1px solid var(--wq-border);
@@ -3540,7 +3615,10 @@ def _render_top_nav():
 
     cols = st.columns(len(NAV_PAGES), gap="small")
 
-    for col, (page_key, icon, title) in zip(cols, NAV_PAGES):
+    # Persian reading order: the first page («تعریف پایش») goes in the RIGHTMOST
+    # column, the last one («چت بات») on the left. Filling the columns in
+    # reverse is what produces that, independently of any CSS.
+    for col, (page_key, icon, title) in zip(list(cols)[::-1], NAV_PAGES):
         locked = (page_key != "setup") and (not results_ready or busy)
         is_active = (st.session_state.active_page == page_key)
         label = f"{icon}  {title}" + ("  🔒" if locked else "")
@@ -4166,8 +4244,14 @@ def render_setup_page():
     # ==========================================================================
     _render_step_header(2, "📅", "بازه زمانی")
     c1, c2 = st.columns(2)
-    start = c1.date_input("از تاریخ", value=date(2024, 1, 1), disabled=st.session_state.processing_in_progress)
-    end = c2.date_input("تا تاریخ (غیرشامل)", value=date(2025, 1, 1), disabled=st.session_state.processing_in_progress)
+    # Default range: the twelve months ending with the start of the current
+    # month. Today 2026-09-27 -> از 2025-09-01 تا 2026-09-01.
+    _today = date.today()
+    _default_end = date(_today.year, _today.month, 1)
+    _default_start = date(_today.year - 1, _today.month, 1)
+
+    start = c1.date_input("از تاریخ", value=_default_start, disabled=st.session_state.processing_in_progress)
+    end = c2.date_input("تا تاریخ (غیرشامل)", value=_default_end, disabled=st.session_state.processing_in_progress)
 
     if start >= end:
         st.error("بازه تاریخ نامعتبر است")
