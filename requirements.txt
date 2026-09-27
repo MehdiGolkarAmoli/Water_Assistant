@@ -14,3 +14,5 @@ pymannkendall
 langchain-openai
 langchain
 langchain_tavily
+arabic-reshaper
+python-bidi
