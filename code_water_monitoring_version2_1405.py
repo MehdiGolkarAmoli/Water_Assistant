@@ -122,6 +122,14 @@ def param_short_name(parameter_type):
     return "CDOM"
 
 
+# Persian names of the GREGORIAN months — the app's date range is Gregorian,
+# these are only the Persian spellings of the Gregorian month names.
+GREGORIAN_MONTHS_FA = [
+    "ژانویه", "فوریه", "مارس", "آوریل", "مه", "ژوئن",
+    "ژوئیه", "اوت", "سپتامبر", "اکتبر", "نوامبر", "دسامبر",
+]
+
+
 def param_persian_name(parameter_type):
     """
     Persian name shown to the user. Everything the end user reads on a
@@ -2096,6 +2104,39 @@ EXECUTIVE_SUMMARY_PROMPT = """یک «خلاصه مدیریتی» از وضعیت
 - عدد کم بیاور؛ فقط جایی که واقعاً به درک مدیر کمک می‌کند."""
 
 
+# =============================================================================
+# دکمه‌های آماده صفحه چت — fixed prompts behind the quick-action buttons
+# =============================================================================
+# Pressing one of these sends the prompt to exactly the same expert agent the
+# typed questions go to. Edit the text here to change what each button asks.
+
+QUICK_BRIEF_PROMPT = """در حداکثر ۳ تا ۴ خط و با زبانی کاملاً ساده و غیرتخصصی، وضعیت کلی کیفیت آب این منطقه را توضیح بده.
+
+- بدون عنوان، بدون فهرست شماره‌دار و بدون هیچ اصطلاح فنی یا مخفف انگلیسی بنویس؛ طوری که یک فرد غیرمتخصص
+  به‌راحتی متوجه شود.
+- فقط تصویر کلی را بگو: آب این پهنه در مجموع در چه وضعیتی است، مهم‌ترین نکته‌ای که باید بدانیم چیست، و
+  آیا جای نگرانی هست یا نه.
+- اگر ماه یا فصل خاصی وضعیت متفاوت یا بدتری داشته، در همین چند خط کوتاه به آن اشاره کن.
+- عدد کم بیاور و هیچ عدد، ماه یا رویدادی را از خودت نساز."""
+
+
+QUICK_DEEP_PROMPT = """یک تحلیل کامل، دقیق و حرفه‌ای از کیفیت آب این منطقه ارائه بده و هر آنچه را که از داده‌های موجود قابل استخراج است پوشش بده.
+
+پاسخ را با عنوان‌های کوتاه و در این ساختار بنویس:
+۱. معرفی منطقه و بازه پایش — نام منطقه را با ابزار reverse_geocode از مختصات مرکز به دست بیاور.
+۲. وضعیت هر سه جنبه کیفیت آب به‌صورت جداگانه: میانگین، دامنه تغییرات، بیشینه و کمینه و ماهی که در آن رخ داده است.
+۳. روند بلندمدت هر جنبه بر پایه آزمون روند: جهت روند، معنادار بودن یا نبودن آن، و شیب تغییر.
+۴. الگوی فصلی: کدام ماه‌ها یا فصل‌ها به‌طور سیستماتیک بدترین و کدام بهترین وضعیت را دارند.
+۵. ناهنجاری‌ها: ماه‌های غیرعادی را فهرست کن و برای مهم‌ترین آن‌ها با ابزار داده‌های هواشناسی، علت محتمل
+   (بارش شدید، ذوب برف، باد، دمای بالا) را بررسی و بیان کن.
+۶. رابطه میان جنبه‌های کیفیت آب: همبستگی‌های موجود را تفسیر کن و توضیح بده چه فرایند محیطی می‌تواند آن را توجیه کند.
+۷. کیفیت و محدودیت داده: درصد پوشش آب، ماه‌های بدون داده، و هر محدودیتی که نتیجه‌گیری را محتاطانه می‌کند.
+۸. جمع‌بندی و توصیه‌های عملی برای بهره‌بردار و مدیر، همراه با اولویت‌بندی.
+
+همه چیز را فقط بر پایه داده‌های تحلیل موجود و نتایج ابزارها بنویس و هیچ عدد، ماه یا رویدادی را از خودت نساز.
+پاسخ باید کاملاً فارسی و بدون مخفف یا واژه انگلیسی باشد."""
+
+
 def _build_agent_system_prompt(analysis_json):
     """
     Persian system prompt for the water-quality expert agent. Combines the
@@ -2647,17 +2688,52 @@ def render_expert_chat_tab():
         st.session_state.expert_chat_history = []
         st.rerun()
 
+    # ------------------------------------------------------------------
+    # Ready-made questions. They go to exactly the same expert agent a typed
+    # question goes to; only the wording is fixed (see QUICK_*_PROMPT).
+    # ------------------------------------------------------------------
+    st.markdown(
+        '<div class="wq-quick-hint">می‌توانید سؤال خود را بنویسید، یا یکی از بررسی‌های آماده زیر را اجرا کنید:</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="wq-quick-anchor"></div>', unsafe_allow_html=True)
+
+    quick_question = None
+    quick_label = None
+
+    qcol_left, qcol_right = st.columns(2)
+    # Right-to-left: the quick review sits on the right, the deep one on the left
+    if qcol_right.button("⚡ بررسی خلاصه و سریع", key="wqquick_brief",
+                         use_container_width=True,
+                         help="توضیح کوتاه و ساده از وضعیت کلی کیفیت آب، در ۳ تا ۴ خط"):
+        quick_question = QUICK_BRIEF_PROMPT
+        quick_label = "⚡ بررسی خلاصه و سریع"
+
+    if qcol_left.button("🔬 بررسی جامع و دقیق", key="wqquick_deep",
+                        use_container_width=True,
+                        help="تحلیل کامل هر سه شاخص: روند، الگوی فصلی، ناهنجاری‌ها، همبستگی‌ها و توصیه‌ها"):
+        quick_question = QUICK_DEEP_PROMPT
+        quick_label = "🔬 بررسی جامع و دقیق"
+
     st.divider()
 
     for msg in st.session_state.expert_chat_history:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            # A ready-made question is shown by its button title, while the full
+            # prompt behind it stays in the history as the agent's context.
+            st.markdown(msg.get("display") or msg["content"])
 
-    user_question = st.chat_input("سؤال خود را درباره کیفیت آب این منطقه بپرسید...")
+    typed_question = st.chat_input("سؤال خود را درباره کیفیت آب این منطقه بپرسید...")
+
+    user_question = typed_question or quick_question
+    display_text = None if typed_question else quick_label
+
     if user_question:
-        st.session_state.expert_chat_history.append({"role": "user", "content": user_question})
+        st.session_state.expert_chat_history.append(
+            {"role": "user", "content": user_question, "display": display_text}
+        )
         with st.chat_message("user"):
-            st.markdown(user_question)
+            st.markdown(display_text or user_question)
 
         with st.chat_message("assistant"):
             with st.spinner("در حال بررسی توسط متخصص هوش مصنوعی..."):
@@ -3361,6 +3437,58 @@ def _inject_global_app_css():
             font-size: 1.35rem;
             font-weight: 700;
             line-height: 1.9;
+        }
+
+        /* ---- Ready-made question buttons on the chat page ---- */
+        .wq-quick-anchor { display: none; }
+        .wq-quick-hint {
+            direction: rtl;
+            text-align: right;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: var(--wq-navy);
+            margin: 1.1rem 0 0.7rem 0;
+        }
+
+        div[class*="st-key-wqquick_"] .stButton > button,
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
+            min-height: 4.6rem !important;
+            border-radius: 18px !important;
+            border: none !important;
+            color: #ffffff !important;
+            direction: rtl !important;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.55rem !important;
+            font-weight: 800 !important;
+            line-height: 1.6 !important;
+            letter-spacing: 0.2px;
+            transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+        }
+        div[class*="st-key-wqquick_"] .stButton > button p,
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.55rem !important;
+            font-weight: 800 !important;
+            margin: 0 !important;
+        }
+
+        /* Quick look — warm amber, reads as "fast" */
+        div[class*="st-key-wqquick_brief"] .stButton > button {
+            background: linear-gradient(135deg, #F5A524 0%, #E07B0B 100%) !important;
+            box-shadow: 0 6px 18px rgba(224, 123, 11, 0.38) !important;
+        }
+        /* Full analysis — deep teal, reads as "thorough" */
+        div[class*="st-key-wqquick_deep"] .stButton > button {
+            background: linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%) !important;
+            box-shadow: 0 6px 18px rgba(10, 63, 74, 0.38) !important;
+        }
+        div[class*="st-key-wqquick_"] .stButton > button:hover {
+            transform: translateY(-3px);
+            filter: brightness(1.06);
+        }
+        div[class*="st-key-wqquick_"] .stButton > button:active {
+            transform: translateY(0);
         }
 
         /* ---- خلاصه مدیریتی card (one line per row, large and readable) ---- */
@@ -4178,19 +4306,48 @@ def render_setup_page():
     # ==========================================================================
     # 2. Time period
     # ==========================================================================
-    _render_step_header(2, "📅", "بازه زمانی")
-    c1, c2 = st.columns(2)
-    # Default range: the twelve months ending with the start of the current
-    # month. Today 2026-09-27 -> از 2025-09-01 تا 2026-09-01.
-    _today = date.today()
-    _default_end = date(_today.year, _today.month, 1)
-    _default_start = date(_today.year - 1, _today.month, 1)
+    _render_step_header(2, "📅", "بازه زمانی (تقویم میلادی)")
 
-    start = c1.date_input("از تاریخ", value=_default_start, disabled=st.session_state.processing_in_progress)
-    end = c2.date_input("تا تاریخ (غیرشامل)", value=_default_end, disabled=st.session_state.processing_in_progress)
+    # The month/year drop-downs below replace the previous calendar widget on
+    # purpose: that widget is rendered by the browser and, on a Persian-locale
+    # browser, it showed a Jalali (solar) calendar. Picking the Gregorian year
+    # and month explicitly removes any dependence on the browser's locale — and
+    # the pipeline works month by month anyway, so the day was never used.
+    _today = date.today()
+    _default_end_year, _default_end_month = _today.year, _today.month
+    _default_start_year, _default_start_month = _today.year - 1, _today.month
+
+    year_options = list(range(2017, _today.year + 1))   # Sentinel-2 L2A starts 2017
+
+    def _month_label(m):
+        return f"{m:02d} — {GREGORIAN_MONTHS_FA[m - 1]}"
+
+    dc1, dc2, dc3, dc4 = st.columns(4)
+    # Right-to-left reading order: «از» on the right, «تا» on the left
+    col_start_year, col_start_month, col_end_year, col_end_month = dc4, dc3, dc2, dc1
+
+    start_year = col_start_year.selectbox(
+        "از سال (میلادی)", year_options,
+        index=year_options.index(_default_start_year) if _default_start_year in year_options else 0,
+        disabled=st.session_state.processing_in_progress, key="start_year")
+    start_month = col_start_month.selectbox(
+        "از ماه", list(range(1, 13)), index=_default_start_month - 1,
+        format_func=_month_label,
+        disabled=st.session_state.processing_in_progress, key="start_month")
+    end_year = col_end_year.selectbox(
+        "تا سال (میلادی)", year_options,
+        index=year_options.index(_default_end_year) if _default_end_year in year_options else len(year_options) - 1,
+        disabled=st.session_state.processing_in_progress, key="end_year")
+    end_month = col_end_month.selectbox(
+        "تا ماه (غیرشامل)", list(range(1, 13)), index=_default_end_month - 1,
+        format_func=_month_label,
+        disabled=st.session_state.processing_in_progress, key="end_month")
+
+    start = date(start_year, start_month, 1)
+    end = date(end_year, end_month, 1)
 
     if start >= end:
-        st.error("بازه تاریخ نامعتبر است")
+        st.error("بازه تاریخ نامعتبر است — تاریخ پایان باید بعد از تاریخ شروع باشد.")
         st.stop()
 
     months = (end.year - start.year) * 12 + (end.month - start.month)
