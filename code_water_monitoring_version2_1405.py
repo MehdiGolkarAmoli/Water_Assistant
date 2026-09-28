@@ -4387,6 +4387,87 @@ def _render_roi_map():
 
 
 # =============================================================================
+# Gregorian calendar for the date pickers
+# =============================================================================
+def _force_gregorian_calendar():
+    """
+    Make the calendar popup of the two date pickers always show the GREGORIAN
+    calendar with Latin digits.
+
+    Why this is needed: the pop-up calendar is drawn in the browser, and on a
+    machine whose locale is Persian (fa-IR) the browser renders month names,
+    day numbers and the year in the Jalali (solar) calendar — even though the
+    value Streamlit receives is always a Gregorian date. The result is a
+    picker that *looks* Persian while the app works in Gregorian months, which
+    is confusing.
+
+    The fix pins the locale used for date formatting inside the app's page to
+    'en-US' with calendar=gregory and numberingSystem=latn, so the calendar is
+    Gregorian no matter what the viewer's browser locale is. It is applied once
+    per page load, affects only how dates are DISPLAYED, and changes no value,
+    no default (today's date is still computed in Python exactly as before) and
+    no processing logic.
+    """
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <script>
+        (function () {
+          var W = null;
+          try { W = window.parent; } catch (err) { return; }
+          if (!W || W.__wqGregorianPatched) { return; }
+          W.__wqGregorianPatched = true;
+
+          var LOCALE = 'en-US-u-ca-gregory-nu-latn';
+
+          // Some date libraries pick their calendar from <html lang>.
+          try {
+            if (W.document && W.document.documentElement) {
+              W.document.documentElement.lang = 'en';
+            }
+          } catch (err) { /* ignore */ }
+
+          // Force every Intl.DateTimeFormat in the page to the Gregorian
+          // calendar with Latin digits.
+          try {
+            var OrigDTF = W.Intl.DateTimeFormat;
+            var PatchedDTF = function (locales, options) {
+              var opts = {};
+              if (options) {
+                for (var k in options) {
+                  if (Object.prototype.hasOwnProperty.call(options, k)) { opts[k] = options[k]; }
+                }
+              }
+              opts.calendar = 'gregory';
+              opts.numberingSystem = 'latn';
+              return new OrigDTF(LOCALE, opts);
+            };
+            PatchedDTF.prototype = OrigDTF.prototype;
+            PatchedDTF.supportedLocalesOf = function () {
+              return OrigDTF.supportedLocalesOf.apply(OrigDTF, arguments);
+            };
+            W.Intl.DateTimeFormat = PatchedDTF;
+          } catch (err) { /* ignore */ }
+
+          // Same for the Date helpers that read the browser locale directly.
+          try {
+            var dp = W.Date.prototype;
+            var oDay = dp.toLocaleDateString;
+            var oAll = dp.toLocaleString;
+            var oTime = dp.toLocaleTimeString;
+            dp.toLocaleDateString = function (l, o) { return oDay.call(this, LOCALE, o); };
+            dp.toLocaleString = function (l, o) { return oAll.call(this, LOCALE, o); };
+            dp.toLocaleTimeString = function (l, o) { return oTime.call(this, LOCALE, o); };
+          } catch (err) { /* ignore */ }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+# =============================================================================
 # Page 1 — area of interest, time period, and "start monitoring"
 # =============================================================================
 def render_setup_page():
@@ -4425,6 +4506,10 @@ def render_setup_page():
     # ==========================================================================
     _render_step_header(2, "📅", "بازه زمانی")
 
+    # Pin the pop-up calendar to the Gregorian calendar with Latin digits,
+    # whatever the viewer's browser locale is (see _force_gregorian_calendar).
+    _force_gregorian_calendar()
+
     # Two ordinary calendar pickers (st.date_input): clicking a field opens the
     # familiar month calendar, exactly as in the earlier version of the app.
     # The defaults are still computed from today's date — one year back to the
@@ -4434,6 +4519,15 @@ def render_setup_page():
     _default_end = date(_today.year, _today.month, 1)          # current month
     _default_start = date(_today.year - 1, _today.month, 1)    # same month, one year earlier
     _min_date = date(2017, 1, 1)                               # Sentinel-2 L2A archive starts 2017
+
+    # Unambiguous Gregorian text in the field itself (YYYY/MM/DD). The argument
+    # only exists on newer Streamlit releases, so it is passed conditionally.
+    _date_kwargs = {}
+    try:
+        if 'format' in inspect.signature(st.date_input).parameters:
+            _date_kwargs['format'] = "YYYY/MM/DD"
+    except Exception:
+        pass
 
     dc1, dc2 = st.columns(2)
     # Right-to-left reading order: «از تاریخ» on the right, «تا تاریخ» on the left
@@ -4445,6 +4539,7 @@ def render_setup_page():
         min_value=_min_date,
         disabled=st.session_state.processing_in_progress,
         key="start_date_pick",
+        **_date_kwargs,
     )
     end_pick = col_end.date_input(
         "تا تاریخ (غیرشامل)",
@@ -4452,6 +4547,7 @@ def render_setup_page():
         min_value=_min_date,
         disabled=st.session_state.processing_in_progress,
         key="end_date_pick",
+        **_date_kwargs,
     )
 
     # The pipeline works month by month, so both dates are snapped to the first
@@ -4468,8 +4564,11 @@ def render_setup_page():
         st.stop()
 
     months = (end.year - start.year) * 12 + (end.month - start.month)
-    st.info(f"📅 بازه انتخابی: **{months} ماه**")
-    st.caption("پایش ماه‌به‌ماه انجام می‌شود؛ بنابراین روز انتخاب‌شده در تقویم اهمیتی ندارد و ماه کامل در نظر گرفته می‌شود.")
+    st.info(
+        f"📅 بازه انتخابی: **{months} ماه** "
+        f"(میلادی: از {start.strftime('%Y/%m')} تا {end.strftime('%Y/%m')})"
+    )
+    st.caption("تاریخ‌ها میلادی هستند. پایش ماه‌به‌ماه انجام می‌شود؛ بنابراین روز انتخاب‌شده در تقویم اهمیتی ندارد و ماه کامل در نظر گرفته می‌شود.")
 
     # ==========================================================================
     # 3. Run analysis — fully automatic (preprocessing + both indices)
