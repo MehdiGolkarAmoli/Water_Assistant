@@ -220,6 +220,16 @@ CACHE_ROOT_NAME = "wq_monitor_cache"
 RUN_CONFIG_FILE = "run_config.json"
 CACHE_MAX_AGE_DAYS = 14
 
+# --- Automatic continuation after an internet interruption -------------------
+# The monitoring carries on by itself: whenever a run ends with months that
+# failed, the app re-arms a resume run automatically instead of waiting for the
+# user to press «ادامه از محل قطع». The delay before each attempt grows so a
+# connection that takes a minute to come back is still caught, and the counter
+# resets whenever an attempt actually downloads something — so a long outage
+# with intermittent connectivity keeps making progress.
+AUTO_RESUME_MAX_ATTEMPTS = 6
+AUTO_RESUME_DELAYS = [0, 5, 20, 40, 60, 60]   # seconds to wait before attempt N
+
 # Status constants
 STATUS_NO_DATA = "no_data"
 STATUS_COMPLETE = "complete"
@@ -274,6 +284,12 @@ if 'map_version' not in st.session_state:
     # by its own drawing toolbar — otherwise a deleted region would be sent
     # back by the widget and reappear on the map.
     st.session_state.map_version = 0
+if 'auto_resume_attempts' not in st.session_state:
+    # How many automatic continuation attempts have been made without progress
+    st.session_state.auto_resume_attempts = 0
+if 'last_completed_count' not in st.session_state:
+    # Months already downloaded at the end of the previous attempt
+    st.session_state.last_completed_count = -1
 if 'pending_run' not in st.session_state:
     # 'start' | 'resume' | None — a click arms the run, the next script run
     # executes it (so the page is fully rendered before processing begins)
@@ -3606,6 +3622,23 @@ def _has_any_results():
     return any(bool(st.session_state.results.get(p)) for p in ALL_PARAMETERS)
 
 
+def _completed_month_count():
+    """Months successfully downloaded so far, across all parameters."""
+    return sum(
+        len(st.session_state.downloaded_months.get(p) or {}) for p in ALL_PARAMETERS
+    )
+
+
+def _unfinished_month_count():
+    """Months that failed and are therefore still worth retrying."""
+    return sum(
+        1
+        for p in ALL_PARAMETERS
+        for status in (st.session_state.month_statuses.get(p) or {}).values()
+        if status.get('status') == STATUS_FAILED
+    )
+
+
 def _render_app_header():
     """Logo + gradient title + one-line subtitle, shown on every page."""
     logo_b64 = _get_app_logo_base64()
@@ -3708,6 +3741,8 @@ def _render_status_strip():
             st.session_state.processing_complete = False
             st.session_state.processing_in_progress = False
             st.session_state.pending_run = None
+            st.session_state.auto_resume_attempts = 0
+            st.session_state.last_completed_count = -1
             st.session_state.expert_analysis_json = None
             st.session_state.expert_analysis_signature = None
             st.session_state.executive_summary = None
@@ -4419,6 +4454,8 @@ def render_setup_page():
         st.session_state.processing_in_progress = True
         st.session_state.resume_after_interruption = False
         st.session_state.current_temp_dir = None
+        st.session_state.auto_resume_attempts = 0
+        st.session_state.last_completed_count = -1
         st.session_state.pending_run = 'start'
 
         # FIX E: Persist processing config so Resume can reconstruct the AOI and params
@@ -4438,6 +4475,8 @@ def render_setup_page():
         st.rerun()
 
     if resume_btn and st.session_state.processing_config is not None:
+        # A manual press restarts the automatic retry cycle from scratch
+        st.session_state.auto_resume_attempts = 0
         st.session_state.processing_in_progress = True
         st.session_state.resume_after_interruption = False
         st.session_state.pending_run = 'resume'
@@ -4461,7 +4500,28 @@ def render_setup_page():
         if auto_continue and not pending:
             st.info("🔄 اتصال اینترنت قطع شده بود؛ پایش از همان جا به‌طور خودکار ادامه می‌یابد...")
 
+        # An automatic continuation waits a little first, so a connection that
+        # needs a few seconds to come back is caught instead of failing again
+        # straight away. The user sees exactly what is happening and never has
+        # to press anything.
+        attempt = st.session_state.auto_resume_attempts
+        if pending == 'resume' and attempt > 0:
+            delay = AUTO_RESUME_DELAYS[min(attempt - 1, len(AUTO_RESUME_DELAYS) - 1)]
+            countdown = st.empty()
+            for remaining in range(delay, 0, -1):
+                countdown.warning(
+                    "⏳ ارتباط قطع شد — پایش به‌طور خودکار ادامه می‌یابد. "
+                    f"تلاش {attempt} از {AUTO_RESUME_MAX_ATTEMPTS}، "
+                    f"{remaining} ثانیه دیگر..."
+                )
+                time.sleep(1)
+            countdown.info(
+                f"🔄 ادامه خودکار پایش — تلاش {attempt} از {AUTO_RESUME_MAX_ATTEMPTS}؛ "
+                "ماه‌های دریافت‌شده دوباره دانلود نمی‌شوند."
+            )
+
         aoi = ee.Geometry.Polygon([config['polygon_coords']])
+        run_crashed = False
 
         try:
             success = run_full_analysis(
@@ -4488,6 +4548,7 @@ def render_setup_page():
                     st.warning("⚠️ داده‌ای برای این منطقه و بازه زمانی یافت نشد.")
         except Exception:
             # FIX F: On error, flag that a resume is possible instead of losing progress
+            run_crashed = True
             st.session_state.resume_after_interruption = True
             if is_fresh:
                 st.error(
@@ -4498,13 +4559,38 @@ def render_setup_page():
                 st.error("اتصال مجدداً قطع شد. لطفاً دوباره تلاش کنید.")
         finally:
             st.session_state.processing_in_progress = False
+
+            # ---- Automatic continuation -----------------------------------
+            # If months are still outstanding, arm another resume run right
+            # away rather than waiting for «ادامه از محل قطع» to be pressed.
+            # Any attempt that actually downloads something resets the counter,
+            # so the monitoring keeps going for as long as it makes progress.
+            completed_now = _completed_month_count()
+            if completed_now > st.session_state.last_completed_count:
+                st.session_state.auto_resume_attempts = 0
+            st.session_state.last_completed_count = completed_now
+
+            still_unfinished = bool(_unfinished_month_count()) or run_crashed
+
+            if still_unfinished and st.session_state.auto_resume_attempts < AUTO_RESUME_MAX_ATTEMPTS:
+                st.session_state.auto_resume_attempts += 1
+                st.session_state.pending_run = 'resume'
+                st.session_state.processing_in_progress = True
+                st.session_state.resume_after_interruption = False
+            elif still_unfinished:
+                # Automatic attempts exhausted — fall back to the manual button
+                st.session_state.resume_after_interruption = True
+            else:
+                st.session_state.auto_resume_attempts = 0
+                st.session_state.resume_after_interruption = False
+
             st.rerun()
 
-    # Hint when a partial run can be resumed
+    # Shown only once the automatic attempts have been exhausted
     if st.session_state.resume_after_interruption and not st.session_state.processing_in_progress:
         st.warning(
-            "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
-            "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
+            "⚠️ پایش به دلیل قطعی اینترنت متوقف شد و تلاش‌های خودکار برای ادامه نتیجه نداد. "
+            "پس از برقراری اتصال، دکمه «ادامه از محل قطع» را فشار دهید تا از همان‌جا ادامه یابد."
         )
 
     # --- Run status + clear-results action, directly under the run buttons ---
