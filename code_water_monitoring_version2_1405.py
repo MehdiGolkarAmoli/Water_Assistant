@@ -265,9 +265,6 @@ if 'connection_interrupted' not in st.session_state:
     # Set by the processing loop when the link to Earth Engine drops, so the
     # run stops at that point instead of failing every remaining month
     st.session_state.connection_interrupted = False
-if 'recovered_run_checked' not in st.session_state:
-    # An unfinished run left on disk is looked for once per session
-    st.session_state.recovered_run_checked = False
 if 'cdom_display_range' not in st.session_state:
     # (vmin, vmax) colour range derived from the CDOM data of the current run
     st.session_state.cdom_display_range = None
@@ -395,41 +392,6 @@ def save_run_config(cache_dir, config):
             json.dump(config, f, ensure_ascii=False)
     except Exception:
         pass
-
-
-def find_resumable_run():
-    """
-    Return (config, cache_dir) of the most recent unfinished run found on disk,
-    or (None, None). Only runs that actually have downloaded images count.
-    """
-    root = _cache_root()
-    best = None
-    try:
-        for name in os.listdir(root):
-            folder = os.path.join(root, name)
-            config_path = os.path.join(folder, RUN_CONFIG_FILE)
-            if not os.path.isdir(folder) or not os.path.isfile(config_path):
-                continue
-            if not any(f.endswith('.tif') for f in os.listdir(folder)):
-                continue
-            mtime = os.path.getmtime(folder)
-            if best is None or mtime > best[0]:
-                best = (mtime, folder, config_path)
-    except Exception:
-        return None, None
-
-    if best is None:
-        return None, None
-
-    try:
-        with open(best[2], 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        if not config.get('polygon_coords'):
-            return None, None
-        config['polygon_coords'] = [tuple(c) for c in config['polygon_coords']]
-        return config, best[1]
-    except Exception:
-        return None, None
 
 
 def reset_run_cache(cache_dir):
@@ -4387,32 +4349,6 @@ def render_setup_page():
 
     st.caption("پس از اجرا، پیش‌پردازش (حذف ابر، حذف برف، استخراج بدنه آب)، سپس شاخص کدورت، شاخص کلروفیل و شاخص مواد آلی محلول به‌طور خودکار محاسبه می‌شوند.")
 
-    # --- Recover an unfinished run left on disk -------------------------------
-    # If the Streamlit session itself was lost (dropped websocket, page reload),
-    # session state is empty but the downloaded images and the run's settings
-    # are still in the cache folder. Restoring them here is what makes
-    # «ادامه از محل قطع» work after a disconnection instead of forcing a fresh
-    # run that downloads everything again.
-    if (not st.session_state.recovered_run_checked
-            and st.session_state.processing_config is None
-            and not st.session_state.processing_in_progress):
-        st.session_state.recovered_run_checked = True
-        recovered_config, recovered_dir = find_resumable_run()
-        if recovered_config:
-            st.session_state.processing_config = recovered_config
-            st.session_state.current_temp_dir = recovered_dir
-
-    if (st.session_state.processing_config is not None
-            and not _has_any_results()
-            and not st.session_state.processing_in_progress):
-        cfg = st.session_state.processing_config
-        st.info(
-            "♻️ یک پایش ناتمام از قبل روی سرور یافت شد "
-            f"(از {cfg.get('start_date', '؟')} تا {cfg.get('end_date', '؟')}). "
-            "با دکمه «ادامه از محل قطع» می‌توانید آن را از همان‌جا تکمیل کنید؛ "
-            "ماه‌های دریافت‌شده دوباره دانلود نمی‌شوند."
-        )
-
     # --- Buttons: Start (fresh) and Resume (after interruption) ---
     btn_col1, btn_col2 = st.columns(2)
 
@@ -4422,8 +4358,11 @@ def render_setup_page():
         disabled=st.session_state.processing_in_progress or selected_polygon is None
     )
 
-    # Show Resume button only when a previous interrupted run exists — either
-    # still held in session state, or recoverable from the run's cache folder.
+    # Show Resume only when THIS session has a run to carry on with. The app no
+    # longer goes looking on the server for some earlier run: doing that meant
+    # every fresh page load adopted whatever run happened to be newest on disk
+    # and announced it, even on first use. The download cache itself is
+    # untouched — it is still keyed on the region + date range.
     has_partial_cache = any(
         bool(st.session_state.downloaded_months.get(p)) or
         bool(st.session_state.month_statuses.get(p))
