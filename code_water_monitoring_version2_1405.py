@@ -3420,76 +3420,82 @@ def _inject_global_app_css():
 
         /* --- size / shape / typography (primary selector) --- */
         div[class*="st-key-wqquick_"] .stButton > button {
-            min-height: 5.3rem !important;
-            padding: 0.9rem 1.4rem !important;
-            border-radius: 20px !important;
+            min-height: 6.5rem !important;
+            padding: 1.15rem 1.7rem !important;
+            border-radius: 22px !important;
             border: none !important;
-            color: #ffffff !important;
+            color: #FFFFFF !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            letter-spacing: 0.2px;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            letter-spacing: 0.3px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
             transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
         }
+        /* every inner node Streamlit puts inside the button (p / div / span / markdown) */
+        div[class*="st-key-wqquick_"] .stButton > button *,
         div[class*="st-key-wqquick_"] .stButton > button p,
         div[class*="st-key-wqquick_"] .stButton > button div,
         div[class*="st-key-wqquick_"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            color: #ffffff !important;
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            color: #FFFFFF !important;
             margin: 0 !important;
         }
 
         /* --- same size / typography via the positional fallback selector.
                Carries NO background, so the per-button gradients below always win. --- */
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
-            min-height: 5.3rem !important;
-            padding: 0.9rem 1.4rem !important;
-            border-radius: 20px !important;
+            min-height: 6.5rem !important;
+            padding: 1.15rem 1.7rem !important;
+            border-radius: 22px !important;
             border: none !important;
-            color: #ffffff !important;
+            color: #FFFFFF !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            letter-spacing: 0.3px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
         }
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button *,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button div,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            color: #ffffff !important;
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            color: #FFFFFF !important;
             margin: 0 !important;
         }
 
-        /* --- colour: quick look — warm sand / amber, reads as "fast" --- */
+        /* --- colour: quick look — warm amber / sunset, reads as "fast" --- */
         div[class*="st-key-wqquick_brief"] .stButton > button {
-            background: linear-gradient(135deg, #E8A33A 0%, #C2700C 100%) !important;
-            box-shadow: 0 8px 22px rgba(194, 112, 12, 0.40) !important;
+            background: linear-gradient(135deg, #FFB43D 0%, #F0890F 45%, #C2570A 100%) !important;
+            box-shadow: 0 10px 26px rgba(194, 87, 10, 0.45) !important;
         }
         div[class*="st-key-wqquick_brief"] .stButton > button:hover {
-            box-shadow: 0 12px 28px rgba(194, 112, 12, 0.50) !important;
+            background: linear-gradient(135deg, #FFC15C 0%, #F5941B 45%, #A8480A 100%) !important;
+            box-shadow: 0 14px 32px rgba(194, 87, 10, 0.55) !important;
         }
         /* --- colour: full analysis — deep water teal, reads as "thorough" --- */
         div[class*="st-key-wqquick_deep"] .stButton > button {
-            background: linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%) !important;
-            box-shadow: 0 8px 22px rgba(10, 63, 74, 0.40) !important;
+            background: linear-gradient(135deg, #072F38 0%, #0B6E76 50%, #16A9B5 100%) !important;
+            box-shadow: 0 10px 26px rgba(7, 47, 56, 0.45) !important;
         }
         div[class*="st-key-wqquick_deep"] .stButton > button:hover {
-            box-shadow: 0 12px 28px rgba(10, 63, 74, 0.50) !important;
+            background: linear-gradient(135deg, #051F26 0%, #0A5E66 50%, #129AA6 100%) !important;
+            box-shadow: 0 14px 32px rgba(7, 47, 56, 0.55) !important;
         }
         div[class*="st-key-wqquick_"] .stButton > button:hover {
             transform: translateY(-3px);
-            filter: brightness(1.06);
+            filter: brightness(1.05);
         }
         div[class*="st-key-wqquick_"] .stButton > button:active {
             transform: translateY(0);
