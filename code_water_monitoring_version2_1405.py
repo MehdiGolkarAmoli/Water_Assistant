@@ -2510,6 +2510,109 @@ def _inject_persian_chat_css():
     )
 
 
+def _force_quick_button_style():
+    """
+    Version-independent styling for the two ready-made question buttons
+    («⚡ بررسی خلاصه و سریع» and «🔬 بررسی جامع و دقیق»).
+
+    The CSS rules in _inject_global_app_css() reach those buttons through
+    Streamlit's per-key element class (st-key-wqquick_*) and a :has()
+    positional fallback. Both depend on Streamlit's internal DOM, so on some
+    Streamlit versions neither selector matches and the buttons keep their
+    default look.
+
+    This helper depends on neither. A tiny invisible component finds the two
+    buttons in the parent document by their visible label and writes the
+    styles straight onto the elements with `important`, re-applying them after
+    every Streamlit rerun. It is purely presentational: it changes no labels,
+    no keys, no behaviour, and touches nothing outside these two buttons.
+    """
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <script>
+        (function () {
+          var DOC = null;
+          try { DOC = window.parent ? window.parent.document : null; } catch (err) { DOC = null; }
+          if (!DOC) { return; }
+
+          var FONT = '"B Nazanin","BNazanin","Vazirmatn",Tahoma,sans-serif';
+          var SIZE = '2.3rem';
+          var WEIGHT = '900';
+          var LINE = '1.8';
+
+          var TARGETS = [
+            { text: 'بررسی خلاصه و سریع',
+              bg: 'linear-gradient(135deg,#FFB43D 0%,#F0890F 45%,#C2570A 100%)',
+              shadow: '0 10px 26px rgba(194,87,10,0.45)' },
+            { text: 'بررسی جامع و دقیق',
+              bg: 'linear-gradient(135deg,#072F38 0%,#0B6E76 50%,#16A9B5 100%)',
+              shadow: '0 10px 26px rgba(7,47,56,0.45)' }
+          ];
+
+          function set(el, prop, val) {
+            try { el.style.setProperty(prop, val, 'important'); } catch (err) { /* ignore */ }
+          }
+
+          function paint() {
+            var buttons = DOC.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {
+              var btn = buttons[i];
+              var label = (btn.innerText || btn.textContent || '').trim();
+              for (var j = 0; j < TARGETS.length; j++) {
+                var t = TARGETS[j];
+                if (label.indexOf(t.text) === -1) { continue; }
+
+                set(btn, 'background', t.bg);
+                set(btn, 'background-image', t.bg);
+                set(btn, 'box-shadow', t.shadow);
+                set(btn, 'border', 'none');
+                set(btn, 'border-radius', '22px');
+                set(btn, 'min-height', '6.5rem');
+                set(btn, 'padding', '1.15rem 1.7rem');
+                set(btn, 'color', '#FFFFFF');
+                set(btn, 'direction', 'rtl');
+                set(btn, 'font-family', FONT);
+                set(btn, 'font-size', SIZE);
+                set(btn, 'font-weight', WEIGHT);
+                set(btn, 'line-height', LINE);
+                set(btn, 'letter-spacing', '0.3px');
+                set(btn, 'text-shadow', '0 2px 4px rgba(0,0,0,0.28)');
+
+                var kids = btn.querySelectorAll('*');
+                for (var k = 0; k < kids.length; k++) {
+                  set(kids[k], 'font-family', FONT);
+                  set(kids[k], 'font-size', SIZE);
+                  set(kids[k], 'font-weight', WEIGHT);
+                  set(kids[k], 'line-height', LINE);
+                  set(kids[k], 'color', '#FFFFFF');
+                  set(kids[k], 'margin', '0');
+                }
+              }
+            }
+          }
+
+          paint();
+
+          // Streamlit rebuilds the DOM on every rerun, so keep re-applying.
+          try {
+            new MutationObserver(paint).observe(DOC.body, { childList: true, subtree: true });
+          } catch (err) { /* ignore */ }
+
+          var n = 0;
+          var timer = setInterval(function () {
+            paint();
+            n += 1;
+            if (n > 60) { clearInterval(timer); }
+          }, 250);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _ensure_expert_analysis():
     """
     Make sure the statistical-analysis JSON for the current monitoring results
@@ -2632,6 +2735,9 @@ def render_expert_chat_tab():
     پاسخ به سؤال مستقیم درباره‌ی وضعیت هوا.
     """
     _inject_persian_chat_css()
+    # Styles the two ready-made question buttons regardless of the Streamlit
+    # version's DOM/class naming (see _force_quick_button_style). Invisible.
+    _force_quick_button_style()
 
     _render_active_section_badge("💬", "چت با متخصص آب", "#E08E0B", "#F5A524")
 
