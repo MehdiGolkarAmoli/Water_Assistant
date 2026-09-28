@@ -122,6 +122,14 @@ def param_short_name(parameter_type):
     return "CDOM"
 
 
+# Persian names of the GREGORIAN months — the app's date range is Gregorian,
+# these are only the Persian spellings of the Gregorian month names.
+GREGORIAN_MONTHS_FA = [
+    "ژانویه", "فوریه", "مارس", "آوریل", "مه", "ژوئن",
+    "ژوئیه", "اوت", "سپتامبر", "اکتبر", "نوامبر", "دسامبر",
+]
+
+
 def param_persian_name(parameter_type):
     """
     Persian name shown to the user. Everything the end user reads on a
@@ -1700,11 +1708,11 @@ def render_parameter_page(parameter_type):
     4. Side-by-side imagery (collapsible)
     """
     if parameter_type == PARAM_TURBIDITY:
-        _render_active_section_badge("🌊", "کدورت آب", "#0E6470", "#46B8C4")
+        _render_active_section_badge("🌊", "کدورت آب", "#0B6E76", "#2FC2CE")
     elif parameter_type == PARAM_CDOM:
-        _render_active_section_badge("🍂", "مواد آلی محلول رنگی", "#8A6023", "#D8A13A")
+        _render_active_section_badge("🍂", "مواد آلی محلول رنگی", "#7A4A12", "#D9A05B")
     else:
-        _render_active_section_badge("🌿", "شاخص کلروفیل", "#1A6E5C", "#58B48A")
+        _render_active_section_badge("🌿", "شاخص کلروفیل", "#1B7A3D", "#4CC26B")
 
     results = st.session_state.results.get(parameter_type, [])
 
@@ -2562,7 +2570,7 @@ def render_summary_page():
     می‌شود. خروجی، یک خلاصه ۵ تا ۶ خطی و ساده برای مدیر است که هر سه شاخص را با
     هم می‌بیند.
     """
-    _render_active_section_badge("🧭", "خلاصه مدیریتی کیفیت آب", "#1B4F6B", "#5A9BC4")
+    _render_active_section_badge("🧭", "خلاصه مدیریتی کیفیت آب", "#14507A", "#4A9BD4")
 
     if 'executive_summary' not in st.session_state:
         st.session_state.executive_summary = None
@@ -2625,7 +2633,7 @@ def render_expert_chat_tab():
     """
     _inject_persian_chat_css()
 
-    _render_active_section_badge("💬", "چت با متخصص آب", "#0B3B4A", "#158793")
+    _render_active_section_badge("💬", "چت با متخصص آب", "#E08E0B", "#F5A524")
 
     if 'expert_chat_history' not in st.session_state:
         st.session_state.expert_chat_history = []
@@ -2821,23 +2829,16 @@ def _inject_global_app_css():
            scientific colormaps, which are generated separately in Python).
            ===================================================================== */
         :root {
-            /* One family: deep water -> shallow water -> light, with a
-               single restrained sand accent. Every surface in the app is
-               built from these, so nothing sits outside the scheme. */
-            --wq-navy:        #0B3B4A;   /* deep water — headings, strong text */
-            --wq-teal-dark:   #0E6470;   /* mid water — primary surfaces      */
-            --wq-teal:        #158793;   /* brand teal                        */
-            --wq-teal-light:  #46B8C4;   /* shallow water — highlights        */
-            --wq-mist:        #DCEFF2;   /* foam — soft fills                 */
-            --wq-amber:       #D8A13A;   /* sand accent, used sparingly       */
-            --wq-amber-dark:  #B9832A;
-            --wq-bg-1:        #F1F9FA;
-            --wq-bg-2:        #FBFDFE;
+            --wq-navy:        #0A3F4A;
+            --wq-teal-dark:   #0B6E76;
+            --wq-teal:        #0E8E99;
+            --wq-teal-light:  #2FC2CE;
+            --wq-amber:       #F5A524;
+            --wq-amber-dark:  #E08E0B;
+            --wq-bg-1:        #EAF7F9;
+            --wq-bg-2:        #F7FCFD;
             --wq-card:        #FFFFFF;
-            --wq-border:      #CFE6EA;
-            --wq-ink-soft:    #4E737B;   /* secondary text                    */
-            --wq-shadow:      rgba(11, 59, 74, 0.10);
-            --wq-shadow-lift: rgba(11, 59, 74, 0.20);
+            --wq-border:      #CDEBEF;
         }
 
         /* ---- Persian font (applied to text-bearing UI elements) ---- */
@@ -2875,8 +2876,7 @@ def _inject_global_app_css():
 
         /* ---- App background: soft, professional water-inspired gradient ---- */
         .stApp {
-            background: linear-gradient(180deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FFFFFF 100%);
-            background-attachment: fixed;
+            background: linear-gradient(160deg, var(--wq-bg-1) 0%, var(--wq-bg-2) 55%, #FDF7EC 100%);
         }
 
         /* ---- Centered content column + general vertical rhythm ---- */
@@ -3234,7 +3234,9 @@ def _inject_global_app_css():
         /* Right-to-left order + tighter spacing for the nav row */
         div[class*="st-key-wqnav_"] { margin: 0 !important; }
 
-        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] {
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"],
+        .element-container:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"],
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + div[data-testid="stHorizontalBlock"] {
             /* NOTE: the right-to-left tab order is done in Python (the columns
                are filled from the right), NOT here. The old rule set both
                `direction: rtl` and `flex-direction: row-reverse`, and the two
@@ -3252,7 +3254,8 @@ def _inject_global_app_css():
         }
 
         /* ---- Base (inactive) tab look ---- */
-        div[class*="st-key-wqnav_"] .stButton > button {
+        div[class*="st-key-wqnav_"] .stButton > button,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
             background: #E3F3F5 !important;
             color: var(--wq-navy) !important;
             border: 1px solid var(--wq-border) !important;
@@ -3267,7 +3270,8 @@ def _inject_global_app_css():
             direction: rtl !important;
             transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
         }
-        div[class*="st-key-wqnav_"] .stButton > button p {
+        div[class*="st-key-wqnav_"] .stButton > button p,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
             font-size: 1.5rem !important;
             font-weight: 800 !important;
@@ -3275,7 +3279,8 @@ def _inject_global_app_css():
             margin: 0 !important;
         }
 
-        div[class*="st-key-wqnav_"] .stButton > button:hover:not(:disabled) {
+        div[class*="st-key-wqnav_"] .stButton > button:hover:not(:disabled),
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button:hover:not(:disabled) {
             background: #D2ECEF !important;
             border-color: var(--wq-teal-light) !important;
             transform: translateY(-2px);
@@ -3283,7 +3288,8 @@ def _inject_global_app_css():
         }
 
         /* ---- Active tab (rendered as a "primary" button) ---- */
-        div[class*="st-key-wqnav_"] .stButton > button[kind="primary"] {
+        div[class*="st-key-wqnav_"] .stButton > button[kind="primary"],
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button[kind="primary"] {
             background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal) 55%, var(--wq-teal-light) 100%) !important;
             color: #ffffff !important;
             border: none !important;
@@ -3291,12 +3297,14 @@ def _inject_global_app_css():
             box-shadow: 0 6px 18px rgba(10, 63, 74, 0.30) !important;
             transform: translateY(-2px);
         }
-        div[class*="st-key-wqnav_"] .stButton > button[kind="primary"]:hover {
+        div[class*="st-key-wqnav_"] .stButton > button[kind="primary"]:hover,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button[kind="primary"]:hover {
             background: linear-gradient(135deg, var(--wq-navy) 0%, var(--wq-teal-dark) 55%, var(--wq-teal) 100%) !important;
         }
 
         /* ---- Locked tabs (before the monitoring run has produced results) ---- */
-        div[class*="st-key-wqnav_"] .stButton > button:disabled {
+        div[class*="st-key-wqnav_"] .stButton > button:disabled,
+        [data-testid="stElementContainer"]:has(.wq-nav-anchor) + [data-testid="stHorizontalBlock"] .stButton > button:disabled {
             background: #EDF3F4 !important;
             color: #A3B6BA !important;
             border: 1px dashed #C6D7DA !important;
@@ -3381,7 +3389,7 @@ def _inject_global_app_css():
         .wq-ready-banner {
             direction: rtl;
             text-align: right;
-            background: linear-gradient(135deg, #0E6470 0%, #46B8C4 100%);
+            background: linear-gradient(135deg, #0B6E76 0%, #2FC2CE 100%);
             color: #ffffff;
             border-radius: 16px;
             padding: 1.1rem 1.5rem;
@@ -3399,75 +3407,47 @@ def _inject_global_app_css():
             direction: rtl;
             text-align: right;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
-            font-size: 1.3rem;
+            font-size: 1.2rem;
             font-weight: 700;
-            color: var(--wq-ink-soft);
-            margin: 1.3rem 0 0.8rem 0;
+            color: var(--wq-navy);
+            margin: 1.1rem 0 0.7rem 0;
         }
 
-        /* Ready-made question buttons — large, coloured, unmistakably clickable.
-           NOTE: each selector below lives in its OWN rule. Mixing a :has()
-           selector into the same comma list used to invalidate the whole rule
-           on browsers without :has() support, which is why these buttons
-           previously showed up unstyled. */
-        div[class*="st-key-wqquick_"] .stButton > button {
-            min-height: 5.2rem !important;
-            border-radius: 20px !important;
+        div[class*="st-key-wqquick_"] .stButton > button,
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
+            min-height: 4.6rem !important;
+            border-radius: 18px !important;
             border: none !important;
             color: #ffffff !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.85rem !important;
+            font-size: 1.55rem !important;
             font-weight: 800 !important;
-            line-height: 1.7 !important;
+            line-height: 1.6 !important;
             letter-spacing: 0.2px;
-            transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+            transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
         }
         div[class*="st-key-wqquick_"] .stButton > button p,
-        div[class*="st-key-wqquick_"] .stButton > button div,
-        div[class*="st-key-wqquick_"] .stButton > button span {
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.85rem !important;
+            font-size: 1.55rem !important;
             font-weight: 800 !important;
-            line-height: 1.7 !important;
-            color: #ffffff !important;
             margin: 0 !important;
         }
 
-        /* Size/typography fallback for Streamlit builds that do not expose
-           per-key classes. Deliberately sets no colour, so the per-button
-           gradients below always win. */
-        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
-            min-height: 5.2rem !important;
-            border-radius: 20px !important;
-            border: none !important;
-            color: #ffffff !important;
-            direction: rtl !important;
-            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.85rem !important;
-            font-weight: 800 !important;
-            line-height: 1.7 !important;
-        }
-
-        /* Quick look — warm sand, reads as "fast" */
+        /* Quick look — warm amber, reads as "fast" */
         div[class*="st-key-wqquick_brief"] .stButton > button {
-            background: linear-gradient(135deg, #E0B057 0%, #B9832A 100%) !important;
-            box-shadow: 0 8px 22px rgba(185, 131, 42, 0.34) !important;
+            background: linear-gradient(135deg, #F5A524 0%, #E07B0B 100%) !important;
+            box-shadow: 0 6px 18px rgba(224, 123, 11, 0.38) !important;
         }
-        div[class*="st-key-wqquick_brief"] .stButton > button:hover {
-            background: linear-gradient(135deg, #D8A13A 0%, #A6741F 100%) !important;
-        }
-        /* Full analysis — deep water, reads as "thorough" */
+        /* Full analysis — deep teal, reads as "thorough" */
         div[class*="st-key-wqquick_deep"] .stButton > button {
-            background: linear-gradient(135deg, #158793 0%, #0B3B4A 100%) !important;
-            box-shadow: 0 8px 22px rgba(11, 59, 74, 0.34) !important;
-        }
-        div[class*="st-key-wqquick_deep"] .stButton > button:hover {
-            background: linear-gradient(135deg, #0E6470 0%, #082F3B 100%) !important;
+            background: linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%) !important;
+            box-shadow: 0 6px 18px rgba(10, 63, 74, 0.38) !important;
         }
         div[class*="st-key-wqquick_"] .stButton > button:hover {
             transform: translateY(-3px);
-            filter: brightness(1.04);
+            filter: brightness(1.06);
         }
         div[class*="st-key-wqquick_"] .stButton > button:active {
             transform: translateY(0);
@@ -4289,31 +4269,45 @@ def render_setup_page():
     # ==========================================================================
     # 2. Time period
     # ==========================================================================
-    _render_step_header(2, "📅", "بازه زمانی")
+    _render_step_header(2, "📅", "بازه زمانی (تقویم میلادی)")
 
-    # Full calendar pickers, as in the first versions of the app.
-    # Default range: the twelve months ending with the start of the current
-    # month (today 2026-09-28 -> از 2025-09-01 تا 2026-09-01).
+    # The month/year drop-downs below replace the previous calendar widget on
+    # purpose: that widget is rendered by the browser and, on a Persian-locale
+    # browser, it showed a Jalali (solar) calendar. Picking the Gregorian year
+    # and month explicitly removes any dependence on the browser's locale — and
+    # the pipeline works month by month anyway, so the day was never used.
     _today = date.today()
-    _default_end = date(_today.year, _today.month, 1)
-    _default_start = date(_today.year - 1, _today.month, 1)
+    _default_end_year, _default_end_month = _today.year, _today.month
+    _default_start_year, _default_start_month = _today.year - 1, _today.month
 
-    # `format` pins the displayed order to year/month/day where the Streamlit
-    # build supports it; it is skipped silently on older versions.
-    _date_kwargs = {}
-    try:
-        if 'format' in inspect.signature(st.date_input).parameters:
-            _date_kwargs['format'] = "YYYY/MM/DD"
-    except Exception:
-        pass
+    year_options = list(range(2017, _today.year + 1))   # Sentinel-2 L2A starts 2017
 
-    c1, c2 = st.columns(2)
-    start = c1.date_input("از تاریخ", value=_default_start,
-                          disabled=st.session_state.processing_in_progress,
-                          **_date_kwargs)
-    end = c2.date_input("تا تاریخ (غیرشامل)", value=_default_end,
-                        disabled=st.session_state.processing_in_progress,
-                        **_date_kwargs)
+    def _month_label(m):
+        return f"{m:02d} — {GREGORIAN_MONTHS_FA[m - 1]}"
+
+    dc1, dc2, dc3, dc4 = st.columns(4)
+    # Right-to-left reading order: «از» on the right, «تا» on the left
+    col_start_year, col_start_month, col_end_year, col_end_month = dc4, dc3, dc2, dc1
+
+    start_year = col_start_year.selectbox(
+        "از سال (میلادی)", year_options,
+        index=year_options.index(_default_start_year) if _default_start_year in year_options else 0,
+        disabled=st.session_state.processing_in_progress, key="start_year")
+    start_month = col_start_month.selectbox(
+        "از ماه", list(range(1, 13)), index=_default_start_month - 1,
+        format_func=_month_label,
+        disabled=st.session_state.processing_in_progress, key="start_month")
+    end_year = col_end_year.selectbox(
+        "تا سال (میلادی)", year_options,
+        index=year_options.index(_default_end_year) if _default_end_year in year_options else len(year_options) - 1,
+        disabled=st.session_state.processing_in_progress, key="end_year")
+    end_month = col_end_month.selectbox(
+        "تا ماه (غیرشامل)", list(range(1, 13)), index=_default_end_month - 1,
+        format_func=_month_label,
+        disabled=st.session_state.processing_in_progress, key="end_month")
+
+    start = date(start_year, start_month, 1)
+    end = date(end_year, end_month, 1)
 
     if start >= end:
         st.error("بازه تاریخ نامعتبر است — تاریخ پایان باید بعد از تاریخ شروع باشد.")
