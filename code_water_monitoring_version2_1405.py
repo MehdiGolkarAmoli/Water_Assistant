@@ -3413,37 +3413,79 @@ def _inject_global_app_css():
             margin: 1.1rem 0 0.7rem 0;
         }
 
-        div[class*="st-key-wqquick_"] .stButton > button,
-        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
-            min-height: 4.6rem !important;
-            border-radius: 18px !important;
+        /* NOTE: every selector below lives in its OWN rule.  A comma-separated
+           list that mixes a plain selector with a :has() selector is thrown away
+           in full by browsers that do not support :has(), which is why the size,
+           font and colour of these two buttons used to be ignored.            */
+
+        /* --- size / shape / typography (primary selector) --- */
+        div[class*="st-key-wqquick_"] .stButton > button {
+            min-height: 5.3rem !important;
+            padding: 0.9rem 1.4rem !important;
+            border-radius: 20px !important;
             border: none !important;
             color: #ffffff !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.55rem !important;
+            font-size: 1.9rem !important;
             font-weight: 800 !important;
-            line-height: 1.6 !important;
+            line-height: 1.75 !important;
             letter-spacing: 0.2px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
             transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
         }
         div[class*="st-key-wqquick_"] .stButton > button p,
-        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p {
+        div[class*="st-key-wqquick_"] .stButton > button div,
+        div[class*="st-key-wqquick_"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.55rem !important;
+            font-size: 1.9rem !important;
             font-weight: 800 !important;
+            line-height: 1.75 !important;
+            color: #ffffff !important;
             margin: 0 !important;
         }
 
-        /* Quick look — warm amber, reads as "fast" */
-        div[class*="st-key-wqquick_brief"] .stButton > button {
-            background: linear-gradient(135deg, #F5A524 0%, #E07B0B 100%) !important;
-            box-shadow: 0 6px 18px rgba(224, 123, 11, 0.38) !important;
+        /* --- same size / typography via the positional fallback selector.
+               Carries NO background, so the per-button gradients below always win. --- */
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
+            min-height: 5.3rem !important;
+            padding: 0.9rem 1.4rem !important;
+            border-radius: 20px !important;
+            border: none !important;
+            color: #ffffff !important;
+            direction: rtl !important;
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            line-height: 1.75 !important;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
         }
-        /* Full analysis — deep teal, reads as "thorough" */
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p,
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button div,
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button span {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            line-height: 1.75 !important;
+            color: #ffffff !important;
+            margin: 0 !important;
+        }
+
+        /* --- colour: quick look — warm sand / amber, reads as "fast" --- */
+        div[class*="st-key-wqquick_brief"] .stButton > button {
+            background: linear-gradient(135deg, #E8A33A 0%, #C2700C 100%) !important;
+            box-shadow: 0 8px 22px rgba(194, 112, 12, 0.40) !important;
+        }
+        div[class*="st-key-wqquick_brief"] .stButton > button:hover {
+            box-shadow: 0 12px 28px rgba(194, 112, 12, 0.50) !important;
+        }
+        /* --- colour: full analysis — deep water teal, reads as "thorough" --- */
         div[class*="st-key-wqquick_deep"] .stButton > button {
             background: linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%) !important;
-            box-shadow: 0 6px 18px rgba(10, 63, 74, 0.38) !important;
+            box-shadow: 0 8px 22px rgba(10, 63, 74, 0.40) !important;
+        }
+        div[class*="st-key-wqquick_deep"] .stButton > button:hover {
+            box-shadow: 0 12px 28px rgba(10, 63, 74, 0.50) !important;
         }
         div[class*="st-key-wqquick_"] .stButton > button:hover {
             transform: translateY(-3px);
