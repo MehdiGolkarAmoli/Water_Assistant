@@ -4423,45 +4423,45 @@ def render_setup_page():
     # ==========================================================================
     # 2. Time period
     # ==========================================================================
-    _render_step_header(2, "📅", "بازه زمانی (تقویم میلادی)")
+    _render_step_header(2, "📅", "بازه زمانی")
 
-    # The month/year drop-downs below replace the previous calendar widget on
-    # purpose: that widget is rendered by the browser and, on a Persian-locale
-    # browser, it showed a Jalali (solar) calendar. Picking the Gregorian year
-    # and month explicitly removes any dependence on the browser's locale — and
-    # the pipeline works month by month anyway, so the day was never used.
+    # Two ordinary calendar pickers (st.date_input): clicking a field opens the
+    # familiar month calendar, exactly as in the earlier version of the app.
+    # The defaults are still computed from today's date — one year back to the
+    # current month — so nothing about that behaviour changes; only the way the
+    # user picks the dates does.
     _today = date.today()
-    _default_end_year, _default_end_month = _today.year, _today.month
-    _default_start_year, _default_start_month = _today.year - 1, _today.month
+    _default_end = date(_today.year, _today.month, 1)          # current month
+    _default_start = date(_today.year - 1, _today.month, 1)    # same month, one year earlier
+    _min_date = date(2017, 1, 1)                               # Sentinel-2 L2A archive starts 2017
 
-    year_options = list(range(2017, _today.year + 1))   # Sentinel-2 L2A starts 2017
+    dc1, dc2 = st.columns(2)
+    # Right-to-left reading order: «از تاریخ» on the right, «تا تاریخ» on the left
+    col_start, col_end = dc2, dc1
 
-    def _month_label(m):
-        return f"{m:02d} — {GREGORIAN_MONTHS_FA[m - 1]}"
+    start_pick = col_start.date_input(
+        "از تاریخ",
+        value=_default_start,
+        min_value=_min_date,
+        disabled=st.session_state.processing_in_progress,
+        key="start_date_pick",
+    )
+    end_pick = col_end.date_input(
+        "تا تاریخ (غیرشامل)",
+        value=_default_end,
+        min_value=_min_date,
+        disabled=st.session_state.processing_in_progress,
+        key="end_date_pick",
+    )
 
-    dc1, dc2, dc3, dc4 = st.columns(4)
-    # Right-to-left reading order: «از» on the right, «تا» on the left
-    col_start_year, col_start_month, col_end_year, col_end_month = dc4, dc3, dc2, dc1
+    # The pipeline works month by month, so both dates are snapped to the first
+    # day of their month. This keeps every monthly composite whole and makes the
+    # result identical to the previous month/year selection.
+    def _month_start(d):
+        return date(d.year, d.month, 1)
 
-    start_year = col_start_year.selectbox(
-        "از سال (میلادی)", year_options,
-        index=year_options.index(_default_start_year) if _default_start_year in year_options else 0,
-        disabled=st.session_state.processing_in_progress, key="start_year")
-    start_month = col_start_month.selectbox(
-        "از ماه", list(range(1, 13)), index=_default_start_month - 1,
-        format_func=_month_label,
-        disabled=st.session_state.processing_in_progress, key="start_month")
-    end_year = col_end_year.selectbox(
-        "تا سال (میلادی)", year_options,
-        index=year_options.index(_default_end_year) if _default_end_year in year_options else len(year_options) - 1,
-        disabled=st.session_state.processing_in_progress, key="end_year")
-    end_month = col_end_month.selectbox(
-        "تا ماه (غیرشامل)", list(range(1, 13)), index=_default_end_month - 1,
-        format_func=_month_label,
-        disabled=st.session_state.processing_in_progress, key="end_month")
-
-    start = date(start_year, start_month, 1)
-    end = date(end_year, end_month, 1)
+    start = _month_start(start_pick)
+    end = _month_start(end_pick)
 
     if start >= end:
         st.error("بازه تاریخ نامعتبر است — تاریخ پایان باید بعد از تاریخ شروع باشد.")
@@ -4469,6 +4469,7 @@ def render_setup_page():
 
     months = (end.year - start.year) * 12 + (end.month - start.month)
     st.info(f"📅 بازه انتخابی: **{months} ماه**")
+    st.caption("پایش ماه‌به‌ماه انجام می‌شود؛ بنابراین روز انتخاب‌شده در تقویم اهمیتی ندارد و ماه کامل در نظر گرفته می‌شود.")
 
     # ==========================================================================
     # 3. Run analysis — fully automatic (preprocessing + both indices)
