@@ -1702,9 +1702,10 @@ def _get_roi_center_coordinates():
 def render_parameter_page(parameter_type):
     """
     Full page for one parameter, in the required order:
+    0. Expert AI brief for this parameter (تحلیل کارشناسی)
     1. Statistics Summary (خلاصه آماری)
-    2. Legend + Management Guidance Panel
-    3. Time-series chart
+    2. Time-series chart
+    3. Legend + Management Guidance Panel (راهنمای رنگ و تفسیر مدیریتی)
     4. Side-by-side imagery (collapsible)
     """
     if parameter_type == PARAM_TURBIDITY:
@@ -1716,8 +1717,16 @@ def render_parameter_page(parameter_type):
 
     results = st.session_state.results.get(parameter_type, [])
 
+    # Expert brief at the very top — generated once per parameter per run.
+    if results:
+        _render_param_brief(parameter_type)
+
     if results:
         display_statistics_summary(results, parameter_type)
+        st.divider()
+
+        # Time-series chart directly under the statistics summary
+        display_time_series_chart(results, parameter_type)
         st.divider()
 
     if parameter_type == PARAM_TURBIDITY:
@@ -1732,11 +1741,6 @@ def render_parameter_page(parameter_type):
     if not results:
         st.info("برای مشاهده نتایج، ابتدا یک منطقه را انتخاب و پایش را اجرا کنید.")
         return
-
-    # Time-series chart first (right after the legend), processed imagery after
-    display_time_series_chart(results, parameter_type)
-
-    st.divider()
 
     with st.expander("🖼️ تصاویر پردازش‌شده (برای نمایش/پنهان‌سازی کلیک کنید)", expanded=False):
         display_side_by_side_imagery(results, parameter_type)
@@ -2064,6 +2068,194 @@ EXECUTIVE_SUMMARY_PROMPT = """یک «خلاصه مدیریتی» از وضعیت
 - اگر داده‌ی یکی از جنبه‌ها برای نتیجه‌گیری کافی نیست، آن را کوتاه و صادقانه بگو، اما خلاصه را از ۶ خط
   بلندتر نکن.
 - عدد کم بیاور؛ فقط جایی که واقعاً به درک مدیر کمک می‌کند."""
+
+
+# =============================================================================
+# تحلیل کارشناسی بالای هر صفحه پارامتر — one short brief per parameter page
+# =============================================================================
+# Same expert agent, same system prompt, same analysis JSON as the chat page —
+# only the question differs. One brief per parameter, generated the first time
+# that page is opened after a monitoring run and then cached, so switching
+# between pages never costs another call to the language model.
+#
+# THESE THREE TEXTS ARE THE ONLY THING TO EDIT if you want a different style of
+# per-parameter brief. Each contains a single line marked  <-- output language
+# Replace it with  "- Write the answer in English."  to switch the language.
+# ---------------------------------------------------------------------------
+
+TURBIDITY_PAGE_SUMMARY_PROMPT = """Write a concise scientific brief on TURBIDITY — the suspended
+particulate load of this water body — using only the analysis data provided.
+
+AUDIENCE
+Two readers at once: a water-quality specialist who expects quantitative rigour, and the
+authority responsible for managing the water body, who must act on the result. Be precise and
+quantitative, and let every figure carry an operational meaning.
+
+FORMAT
+- A single continuous paragraph of 4 to 5 sentences, approximately 90 to 130 words.
+- No line breaks, no bullet points, no numbered list, no emoji, no heading, no table, and no
+  preamble such as "Based on the data provided".
+- Formal, impersonal scientific register throughout; no conversational address to the reader.
+- Write the answer in Persian.                                          <-- output language
+- Professional Persian terminology is expected, but never use an English word, an index acronym
+  or a method name in the answer (no NDTI, no Chl-a, no CDOM, no Mann-Kendall, no MAD).
+  Refer to this parameter as «گل‌آلودگی آب». Write every month name in the Jalali calendar.
+
+CONTENT — develop the paragraph as a continuous argument in this order, without labelling the parts
+1. Define what the parameter represents — the concentration of suspended mineral particles such as
+   clay, silt and resuspended bed sediment, and the light attenuation it produces — and state its
+   quantitative status over the monitoring period: typical level, full range, and month-to-month
+   variability.
+2. Identify the extreme: the month or season carrying the highest load, its value, and its
+   departure from the typical level, together with the seasonal pattern where the record shows a
+   systematic one.
+3. Characterise the long-term behaviour: the direction of the trend, whether it is statistically
+   significant, and the rate of change across the period; where the trend is not significant,
+   state this explicitly rather than implying a direction.
+4. Close with a single recommendation sentence adapted to the nature and use of this particular
+   water body. Establish that nature first — a natural lake, a reservoir impounded by a dam, a
+   wetland or lagoon — and its dominant use — drinking-water supply, irrigation of surrounding
+   farmland, fisheries, or recreation — from the coordinates using the reverse_geocode tool and,
+   where necessary, the search tool. Tailor the advice accordingly: for a reservoir behind a dam,
+   progressive loss of storage to sedimentation, selection of intake level, and sediment-laden
+   inflow during flood events; for a lake serving irrigation or farmland, siltation of canals,
+   pumps and intake structures, and erosion control in the contributing catchment; for a
+   drinking-water source, the load imposed on filtration and the coagulant demand it implies.
+   Where the type or use of the water body cannot be established with confidence, give a generally
+   applicable recommendation and do not assert a type.
+
+RULES
+- Use only the analysis results and the tool outputs. Never invent a value, a month or an event,
+  and never assert a use or a type of water body that the tools do not support.
+- Two to four figures in total is the appropriate density; beyond that the paragraph ceases to be
+  readable.
+- Where water coverage or the number of valid months is insufficient to support a conclusion,
+  state this limitation plainly within the same paragraph and keep to the stated length.
+- Do not report on algal growth or dissolved organic matter, except within half a sentence where
+  it genuinely explains a change in turbidity."""
+
+
+CHLOROPHYLL_PAGE_SUMMARY_PROMPT = """Write a concise scientific brief on CHLOROPHYLL — the
+phytoplankton (algal) biomass of this water body — using only the analysis data provided.
+
+AUDIENCE
+Two readers at once: a water-quality specialist who expects quantitative rigour, and the
+authority responsible for managing the water body, who must act on the result. Be precise and
+quantitative, and let every figure carry an operational meaning.
+
+FORMAT
+- A single continuous paragraph of 4 to 5 sentences, approximately 90 to 130 words.
+- No line breaks, no bullet points, no numbered list, no emoji, no heading, no table, and no
+  preamble such as "Based on the data provided".
+- Formal, impersonal scientific register throughout; no conversational address to the reader.
+- Write the answer in Persian.                                          <-- output language
+- Professional Persian terminology is expected, but never use an English word, an index acronym
+  or a method name in the answer (no NDCI, no Chl-a, no CDOM, no Mann-Kendall, no MAD).
+  Refer to this parameter as «رشد جلبک». Write every month name in the Jalali calendar.
+
+CONTENT — develop the paragraph as a continuous argument in this order, without labelling the parts
+1. Define what the parameter represents — the standing crop of suspended algae and microalgae,
+   which serves as the practical measure of the nutrient enrichment of the water — and state its
+   quantitative status over the monitoring period: typical level, full range, and month-to-month
+   variability.
+2. Identify the extreme: the month or season of peak algal biomass, its value, and its departure
+   from the typical level, together with the seasonal pattern where the record shows a systematic
+   one, and whether the maximum constitutes a short-lived spike or a sustained warm-season
+   elevation.
+3. Characterise the long-term behaviour: the direction of the trend, whether it is statistically
+   significant, and the rate of change across the period; where the trend is not significant,
+   state this explicitly rather than implying a direction.
+4. Close with a single recommendation sentence adapted to the nature and use of this particular
+   water body. Establish that nature first — a natural lake, a reservoir impounded by a dam, a
+   wetland or lagoon — and its dominant use — drinking-water supply, irrigation of surrounding
+   farmland, fisheries, or recreation — from the coordinates using the reverse_geocode tool and,
+   where necessary, the search tool. Tailor the advice accordingly: for a drinking-water
+   reservoir, the months warranting bloom early warning, the resulting taste-and-odour and
+   treatment burden, and selection of intake depth; for a lake serving irrigation or farmland,
+   obstruction of pumps, filters and drip-irrigation emitters, the risk that a dense bloom poses
+   to livestock watering, and control of nutrient loading from fertiliser runoff and wastewater;
+   for a fishery or recreational water, the risk of night-time oxygen depletion and the periods
+   requiring public advisory. Where the type or use of the water body cannot be established with
+   confidence, give a generally applicable recommendation and do not assert a type.
+
+RULES
+- Use only the analysis results and the tool outputs. Never invent a value, a month or an event,
+  and never assert a use or a type of water body that the tools do not support.
+- Two to four figures in total is the appropriate density; beyond that the paragraph ceases to be
+  readable.
+- Where water coverage or the number of valid months is insufficient to support a conclusion,
+  state this limitation plainly within the same paragraph and keep to the stated length.
+- Do not report on turbidity or dissolved organic matter, except within half a sentence where it
+  genuinely explains a change in algal biomass."""
+
+
+CDOM_PAGE_SUMMARY_PROMPT = """Write a concise scientific brief on COLOURED DISSOLVED ORGANIC MATTER —
+the dissolved organic load of this water body — using only the analysis data provided.
+
+AUDIENCE
+Two readers at once: a water-quality specialist who expects quantitative rigour, and the
+authority responsible for managing the water body, who must act on the result. Be precise and
+quantitative, and let every figure carry an operational meaning.
+
+FORMAT
+- A single continuous paragraph of 4 to 5 sentences, approximately 90 to 130 words.
+- No line breaks, no bullet points, no numbered list, no emoji, no heading, no table, and no
+  preamble such as "Based on the data provided".
+- Formal, impersonal scientific register throughout; no conversational address to the reader.
+- Write the answer in Persian.                                          <-- output language
+- Professional Persian terminology is expected, but never use an English word, an index acronym
+  or a method name in the answer (no CDOM, no NDTI, no Chl-a, no Mann-Kendall, no MAD).
+  Refer to this parameter as «مواد آلی محلول در آب». Write every month name in the Jalali calendar.
+
+CONTENT — develop the paragraph as a continuous argument in this order, without labelling the parts
+1. Define what the parameter represents — dissolved humic material transported into the water body
+   from soil, plant litter and the contributing catchment, which absorbs light and imparts a
+   yellow-to-brown colour — and state its quantitative status over the monitoring period: typical
+   level, full range, and month-to-month variability.
+2. Identify the extreme: the month or season carrying the highest dissolved organic load, its
+   value, and its departure from the typical level, together with the seasonal pattern where the
+   record shows a systematic one, and whether the maxima coincide with wet-season inflow or
+   snowmelt.
+3. Characterise the long-term behaviour: the direction of the trend, whether it is statistically
+   significant, and the rate of change across the period; where the trend is not significant,
+   state this explicitly rather than implying a direction.
+4. Close with a single recommendation sentence adapted to the nature and use of this particular
+   water body. Establish that nature first — a natural lake, a reservoir impounded by a dam, a
+   wetland or lagoon — and its dominant use — drinking-water supply, irrigation of surrounding
+   farmland, fisheries, or recreation — from the coordinates using the reverse_geocode tool and,
+   where necessary, the search tool. Tailor the advice accordingly: for a drinking-water
+   reservoir, the disinfection stage and the undesirable by-products that a high organic load
+   promotes, together with the coagulation or activated-carbon capacity this demands; for a lake
+   serving irrigation or farmland, the value of the signal as a tracer of organic and nutrient
+   loading washed in from the catchment after heavy rainfall or snowmelt, and the catchment
+   management this implies; for a lake of ecological or recreational importance, the effect of
+   colour on light penetration, submerged vegetation and apparent water quality. Where the type or
+   use of the water body cannot be established with confidence, give a generally applicable
+   recommendation and do not assert a type.
+
+RULES
+- Use only the analysis results and the tool outputs. Never invent a value, a month or an event,
+  and never assert a use or a type of water body that the tools do not support.
+- Two to four figures in total is the appropriate density; beyond that the paragraph ceases to be
+  readable.
+- Where water coverage or the number of valid months is insufficient to support a conclusion,
+  state this limitation plainly within the same paragraph and keep to the stated length.
+- Do not report on turbidity or algal growth, except within half a sentence where it genuinely
+  explains a change in dissolved organic matter."""
+
+
+PARAM_PAGE_SUMMARY_PROMPTS = {
+    PARAM_TURBIDITY:   TURBIDITY_PAGE_SUMMARY_PROMPT,
+    PARAM_CHLOROPHYLL: CHLOROPHYLL_PAGE_SUMMARY_PROMPT,
+    PARAM_CDOM:        CDOM_PAGE_SUMMARY_PROMPT,
+}
+
+# Card theme + title for the brief shown at the top of each parameter page.
+PARAM_BRIEF_THEME = {
+    PARAM_TURBIDITY:   ("wq-brief-turbidity",   "🧠", "تحلیل کارشناسی هوش مصنوعی — گل‌آلودگی آب"),
+    PARAM_CHLOROPHYLL: ("wq-brief-chlorophyll", "🧠", "تحلیل کارشناسی هوش مصنوعی — رشد جلبک"),
+    PARAM_CDOM:        ("wq-brief-cdom",        "🧠", "تحلیل کارشناسی هوش مصنوعی — مواد آلی محلول در آب"),
+}
 
 
 # =============================================================================
@@ -2510,109 +2702,6 @@ def _inject_persian_chat_css():
     )
 
 
-def _force_quick_button_style():
-    """
-    Version-independent styling for the two ready-made question buttons
-    («⚡ بررسی خلاصه و سریع» and «🔬 بررسی جامع و دقیق»).
-
-    The CSS rules in _inject_global_app_css() reach those buttons through
-    Streamlit's per-key element class (st-key-wqquick_*) and a :has()
-    positional fallback. Both depend on Streamlit's internal DOM, so on some
-    Streamlit versions neither selector matches and the buttons keep their
-    default look.
-
-    This helper depends on neither. A tiny invisible component finds the two
-    buttons in the parent document by their visible label and writes the
-    styles straight onto the elements with `important`, re-applying them after
-    every Streamlit rerun. It is purely presentational: it changes no labels,
-    no keys, no behaviour, and touches nothing outside these two buttons.
-    """
-    import streamlit.components.v1 as components
-
-    components.html(
-        """
-        <script>
-        (function () {
-          var DOC = null;
-          try { DOC = window.parent ? window.parent.document : null; } catch (err) { DOC = null; }
-          if (!DOC) { return; }
-
-          var FONT = '"B Nazanin","BNazanin","Vazirmatn",Tahoma,sans-serif';
-          var SIZE = '2.3rem';
-          var WEIGHT = '900';
-          var LINE = '1.8';
-
-          var TARGETS = [
-            { text: 'بررسی خلاصه و سریع',
-              bg: 'linear-gradient(135deg,#FFB43D 0%,#F0890F 45%,#C2570A 100%)',
-              shadow: '0 10px 26px rgba(194,87,10,0.45)' },
-            { text: 'بررسی جامع و دقیق',
-              bg: 'linear-gradient(135deg,#072F38 0%,#0B6E76 50%,#16A9B5 100%)',
-              shadow: '0 10px 26px rgba(7,47,56,0.45)' }
-          ];
-
-          function set(el, prop, val) {
-            try { el.style.setProperty(prop, val, 'important'); } catch (err) { /* ignore */ }
-          }
-
-          function paint() {
-            var buttons = DOC.querySelectorAll('button');
-            for (var i = 0; i < buttons.length; i++) {
-              var btn = buttons[i];
-              var label = (btn.innerText || btn.textContent || '').trim();
-              for (var j = 0; j < TARGETS.length; j++) {
-                var t = TARGETS[j];
-                if (label.indexOf(t.text) === -1) { continue; }
-
-                set(btn, 'background', t.bg);
-                set(btn, 'background-image', t.bg);
-                set(btn, 'box-shadow', t.shadow);
-                set(btn, 'border', 'none');
-                set(btn, 'border-radius', '22px');
-                set(btn, 'min-height', '6.5rem');
-                set(btn, 'padding', '1.15rem 1.7rem');
-                set(btn, 'color', '#FFFFFF');
-                set(btn, 'direction', 'rtl');
-                set(btn, 'font-family', FONT);
-                set(btn, 'font-size', SIZE);
-                set(btn, 'font-weight', WEIGHT);
-                set(btn, 'line-height', LINE);
-                set(btn, 'letter-spacing', '0.3px');
-                set(btn, 'text-shadow', '0 2px 4px rgba(0,0,0,0.28)');
-
-                var kids = btn.querySelectorAll('*');
-                for (var k = 0; k < kids.length; k++) {
-                  set(kids[k], 'font-family', FONT);
-                  set(kids[k], 'font-size', SIZE);
-                  set(kids[k], 'font-weight', WEIGHT);
-                  set(kids[k], 'line-height', LINE);
-                  set(kids[k], 'color', '#FFFFFF');
-                  set(kids[k], 'margin', '0');
-                }
-              }
-            }
-          }
-
-          paint();
-
-          // Streamlit rebuilds the DOM on every rerun, so keep re-applying.
-          try {
-            new MutationObserver(paint).observe(DOC.body, { childList: true, subtree: true });
-          } catch (err) { /* ignore */ }
-
-          var n = 0;
-          var timer = setInterval(function () {
-            paint();
-            n += 1;
-            if (n > 60) { clearInterval(timer); }
-          }, 250);
-        })();
-        </script>
-        """,
-        height=0,
-    )
-
-
 def _ensure_expert_analysis():
     """
     Make sure the statistical-analysis JSON for the current monitoring results
@@ -2644,6 +2733,8 @@ def _ensure_expert_analysis():
             st.session_state.expert_chat_history = []
             st.session_state.executive_summary = None
             st.session_state.executive_summary_signature = None
+            st.session_state.param_briefs = {}
+            st.session_state.param_brief_signatures = {}
         except Exception as e:
             st.error(f"خطا در تحلیل داده‌ها: {e}")
             return False
@@ -2664,6 +2755,82 @@ def _render_summary_card(summary_text):
         f'<div class="wq-summary-line">{_html.escape(ln)}</div>' for ln in lines
     )
     st.markdown(f'<div class="wq-summary-card">{rows}</div>', unsafe_allow_html=True)
+
+
+def _render_param_brief_card(parameter_type, brief_text):
+    """Render the per-parameter expert brief as one styled RTL card, themed to
+    match the colour of the page it sits on. Purely presentational."""
+    import html as _html
+
+    css_class, icon, title = PARAM_BRIEF_THEME.get(
+        parameter_type, ("wq-brief-turbidity", "🧠", "تحلیل کارشناسی هوش مصنوعی")
+    )
+
+    # The brief is asked for as a single paragraph; collapse any stray newlines
+    # so it always renders as one justified block of text.
+    body = " ".join(str(brief_text).split())
+
+    st.markdown(
+        f"""
+        <div class="wq-param-brief {css_class}">
+            <div class="wq-param-brief-head">
+                <span class="wq-param-brief-icon">{icon}</span>
+                <span class="wq-param-brief-title">{_html.escape(title)}</span>
+            </div>
+            <div class="wq-param-brief-body">{_html.escape(body)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_param_brief(parameter_type):
+    """
+    تحلیل کارشناسی کوتاه بالای صفحه هر پارامتر: همان عامل متخصص و همان دستور
+    سیستمی صفحه چت، اما با یک پرسش ثابتِ مخصوص همان پارامتر.
+
+    برای هر پارامتر فقط یک بار (در نخستین باز شدن آن صفحه پس از هر اجرای پایش)
+    تولید و سپس ذخیره می‌شود؛ بنابراین جابه‌جایی میان صفحه‌ها هزینه‌ای ندارد و
+    با تغییر نتایج پایش، به‌طور خودکار بازتولید می‌شود.
+    """
+    if 'param_briefs' not in st.session_state:
+        st.session_state.param_briefs = {}
+    if 'param_brief_signatures' not in st.session_state:
+        st.session_state.param_brief_signatures = {}
+
+    prompt = PARAM_PAGE_SUMMARY_PROMPTS.get(parameter_type)
+    if not prompt:
+        return
+
+    if not _ensure_expert_analysis():
+        return
+
+    signature = _expert_results_signature()
+    is_stale = (
+        not st.session_state.param_briefs.get(parameter_type)
+        or st.session_state.param_brief_signatures.get(parameter_type) != signature
+    )
+
+    if is_stale:
+        with st.spinner("در حال تهیه تحلیل کارشناسی این شاخص توسط متخصص هوش مصنوعی..."):
+            try:
+                brief = ask_water_quality_expert(
+                    prompt,
+                    st.session_state.expert_analysis_json,
+                    []   # a standalone question: no chat history
+                )
+                st.session_state.param_briefs[parameter_type] = brief
+                st.session_state.param_brief_signatures[parameter_type] = signature
+            except Exception as e:
+                st.warning(
+                    "تحلیل کارشناسی این شاخص تهیه نشد (خطا در ارتباط با متخصص هوش مصنوعی): "
+                    f"{e}"
+                )
+                return
+
+    brief = st.session_state.param_briefs.get(parameter_type)
+    if brief:
+        _render_param_brief_card(parameter_type, brief)
 
 
 def render_summary_page():
@@ -2735,9 +2902,6 @@ def render_expert_chat_tab():
     پاسخ به سؤال مستقیم درباره‌ی وضعیت هوا.
     """
     _inject_persian_chat_css()
-    # Styles the two ready-made question buttons regardless of the Streamlit
-    # version's DOM/class naming (see _force_quick_button_style). Invisible.
-    _force_quick_button_style()
 
     _render_active_section_badge("💬", "چت با متخصص آب", "#E08E0B", "#F5A524")
 
@@ -3526,85 +3690,148 @@ def _inject_global_app_css():
 
         /* --- size / shape / typography (primary selector) --- */
         div[class*="st-key-wqquick_"] .stButton > button {
-            min-height: 6.5rem !important;
-            padding: 1.15rem 1.7rem !important;
-            border-radius: 22px !important;
+            min-height: 5.3rem !important;
+            padding: 0.9rem 1.4rem !important;
+            border-radius: 20px !important;
             border: none !important;
-            color: #FFFFFF !important;
+            color: #ffffff !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.3rem !important;
-            font-weight: 900 !important;
-            line-height: 1.8 !important;
-            letter-spacing: 0.3px;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            line-height: 1.75 !important;
+            letter-spacing: 0.2px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
             transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
         }
-        /* every inner node Streamlit puts inside the button (p / div / span / markdown) */
-        div[class*="st-key-wqquick_"] .stButton > button *,
         div[class*="st-key-wqquick_"] .stButton > button p,
         div[class*="st-key-wqquick_"] .stButton > button div,
         div[class*="st-key-wqquick_"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.3rem !important;
-            font-weight: 900 !important;
-            line-height: 1.8 !important;
-            color: #FFFFFF !important;
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            line-height: 1.75 !important;
+            color: #ffffff !important;
             margin: 0 !important;
         }
 
         /* --- same size / typography via the positional fallback selector.
                Carries NO background, so the per-button gradients below always win. --- */
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
-            min-height: 6.5rem !important;
-            padding: 1.15rem 1.7rem !important;
-            border-radius: 22px !important;
+            min-height: 5.3rem !important;
+            padding: 0.9rem 1.4rem !important;
+            border-radius: 20px !important;
             border: none !important;
-            color: #FFFFFF !important;
+            color: #ffffff !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.3rem !important;
-            font-weight: 900 !important;
-            line-height: 1.8 !important;
-            letter-spacing: 0.3px;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            line-height: 1.75 !important;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
         }
-        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button *,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button div,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.3rem !important;
-            font-weight: 900 !important;
-            line-height: 1.8 !important;
-            color: #FFFFFF !important;
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            line-height: 1.75 !important;
+            color: #ffffff !important;
             margin: 0 !important;
         }
 
-        /* --- colour: quick look — warm amber / sunset, reads as "fast" --- */
+        /* --- colour: quick look — warm sand / amber, reads as "fast" --- */
         div[class*="st-key-wqquick_brief"] .stButton > button {
-            background: linear-gradient(135deg, #FFB43D 0%, #F0890F 45%, #C2570A 100%) !important;
-            box-shadow: 0 10px 26px rgba(194, 87, 10, 0.45) !important;
+            background: linear-gradient(135deg, #E8A33A 0%, #C2700C 100%) !important;
+            box-shadow: 0 8px 22px rgba(194, 112, 12, 0.40) !important;
         }
         div[class*="st-key-wqquick_brief"] .stButton > button:hover {
-            background: linear-gradient(135deg, #FFC15C 0%, #F5941B 45%, #A8480A 100%) !important;
-            box-shadow: 0 14px 32px rgba(194, 87, 10, 0.55) !important;
+            box-shadow: 0 12px 28px rgba(194, 112, 12, 0.50) !important;
         }
         /* --- colour: full analysis — deep water teal, reads as "thorough" --- */
         div[class*="st-key-wqquick_deep"] .stButton > button {
-            background: linear-gradient(135deg, #072F38 0%, #0B6E76 50%, #16A9B5 100%) !important;
-            box-shadow: 0 10px 26px rgba(7, 47, 56, 0.45) !important;
+            background: linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%) !important;
+            box-shadow: 0 8px 22px rgba(10, 63, 74, 0.40) !important;
         }
         div[class*="st-key-wqquick_deep"] .stButton > button:hover {
-            background: linear-gradient(135deg, #051F26 0%, #0A5E66 50%, #129AA6 100%) !important;
-            box-shadow: 0 14px 32px rgba(7, 47, 56, 0.55) !important;
+            box-shadow: 0 12px 28px rgba(10, 63, 74, 0.50) !important;
         }
         div[class*="st-key-wqquick_"] .stButton > button:hover {
             transform: translateY(-3px);
-            filter: brightness(1.05);
+            filter: brightness(1.06);
         }
         div[class*="st-key-wqquick_"] .stButton > button:active {
             transform: translateY(0);
+        }
+
+        /* ---- تحلیل کارشناسی card at the top of each parameter page ----
+           One calm, tinted card per page. The tint, the right-hand rule and the
+           heading colour come from the three .wq-brief-* modifiers below, so
+           each page keeps the colour identity of its own badge.              */
+        .wq-param-brief {
+            direction: rtl;
+            text-align: justify;
+            text-justify: inter-word;
+            border: 1px solid var(--wq-brief-border);
+            border-right: 8px solid var(--wq-brief-accent);
+            border-radius: 20px;
+            background: var(--wq-brief-bg);
+            padding: 1.45rem 1.9rem 1.55rem 1.9rem;
+            margin: 0.3rem 0 1.5rem 0;
+            box-shadow: 0 8px 26px var(--wq-brief-shadow);
+        }
+        .wq-param-brief-head {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 0.6rem;
+            padding-bottom: 0.7rem;
+            margin-bottom: 0.85rem;
+            border-bottom: 1px dashed var(--wq-brief-border);
+        }
+        .wq-param-brief-icon {
+            font-size: 1.55rem;
+            line-height: 1;
+        }
+        .wq-param-brief-title {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.42rem;
+            font-weight: 800;
+            color: var(--wq-brief-accent);
+            letter-spacing: 0.2px;
+        }
+        .wq-param-brief-body {
+            font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif;
+            font-size: 1.5rem;
+            font-weight: 600;
+            line-height: 2.25;
+            color: var(--wq-brief-text);
+        }
+
+        /* Turbidity page — deep water teal */
+        .wq-param-brief.wq-brief-turbidity {
+            --wq-brief-accent: #0B6E76;
+            --wq-brief-border: #CCE8EB;
+            --wq-brief-text:   #0A3F4A;
+            --wq-brief-bg:     linear-gradient(160deg, #FFFFFF 0%, #EFFAFB 100%);
+            --wq-brief-shadow: rgba(11, 110, 118, 0.14);
+        }
+        /* Chlorophyll page — fresh green */
+        .wq-param-brief.wq-brief-chlorophyll {
+            --wq-brief-accent: #227A45;
+            --wq-brief-border: #D2EBD9;
+            --wq-brief-text:   #15432A;
+            --wq-brief-bg:     linear-gradient(160deg, #FFFFFF 0%, #F1FAF3 100%);
+            --wq-brief-shadow: rgba(34, 122, 69, 0.14);
+        }
+        /* Dissolved organic matter page — warm amber / humic brown */
+        .wq-param-brief.wq-brief-cdom {
+            --wq-brief-accent: #9C6420;
+            --wq-brief-border: #EEDCC1;
+            --wq-brief-text:   #5B3B11;
+            --wq-brief-bg:     linear-gradient(160deg, #FFFFFF 0%, #FDF7EE 100%);
+            --wq-brief-shadow: rgba(156, 100, 32, 0.14);
         }
 
         /* ---- خلاصه مدیریتی card (one line per row, large and readable) ---- */
@@ -4387,87 +4614,6 @@ def _render_roi_map():
 
 
 # =============================================================================
-# Gregorian calendar for the date pickers
-# =============================================================================
-def _force_gregorian_calendar():
-    """
-    Make the calendar popup of the two date pickers always show the GREGORIAN
-    calendar with Latin digits.
-
-    Why this is needed: the pop-up calendar is drawn in the browser, and on a
-    machine whose locale is Persian (fa-IR) the browser renders month names,
-    day numbers and the year in the Jalali (solar) calendar — even though the
-    value Streamlit receives is always a Gregorian date. The result is a
-    picker that *looks* Persian while the app works in Gregorian months, which
-    is confusing.
-
-    The fix pins the locale used for date formatting inside the app's page to
-    'en-US' with calendar=gregory and numberingSystem=latn, so the calendar is
-    Gregorian no matter what the viewer's browser locale is. It is applied once
-    per page load, affects only how dates are DISPLAYED, and changes no value,
-    no default (today's date is still computed in Python exactly as before) and
-    no processing logic.
-    """
-    import streamlit.components.v1 as components
-
-    components.html(
-        """
-        <script>
-        (function () {
-          var W = null;
-          try { W = window.parent; } catch (err) { return; }
-          if (!W || W.__wqGregorianPatched) { return; }
-          W.__wqGregorianPatched = true;
-
-          var LOCALE = 'en-US-u-ca-gregory-nu-latn';
-
-          // Some date libraries pick their calendar from <html lang>.
-          try {
-            if (W.document && W.document.documentElement) {
-              W.document.documentElement.lang = 'en';
-            }
-          } catch (err) { /* ignore */ }
-
-          // Force every Intl.DateTimeFormat in the page to the Gregorian
-          // calendar with Latin digits.
-          try {
-            var OrigDTF = W.Intl.DateTimeFormat;
-            var PatchedDTF = function (locales, options) {
-              var opts = {};
-              if (options) {
-                for (var k in options) {
-                  if (Object.prototype.hasOwnProperty.call(options, k)) { opts[k] = options[k]; }
-                }
-              }
-              opts.calendar = 'gregory';
-              opts.numberingSystem = 'latn';
-              return new OrigDTF(LOCALE, opts);
-            };
-            PatchedDTF.prototype = OrigDTF.prototype;
-            PatchedDTF.supportedLocalesOf = function () {
-              return OrigDTF.supportedLocalesOf.apply(OrigDTF, arguments);
-            };
-            W.Intl.DateTimeFormat = PatchedDTF;
-          } catch (err) { /* ignore */ }
-
-          // Same for the Date helpers that read the browser locale directly.
-          try {
-            var dp = W.Date.prototype;
-            var oDay = dp.toLocaleDateString;
-            var oAll = dp.toLocaleString;
-            var oTime = dp.toLocaleTimeString;
-            dp.toLocaleDateString = function (l, o) { return oDay.call(this, LOCALE, o); };
-            dp.toLocaleString = function (l, o) { return oAll.call(this, LOCALE, o); };
-            dp.toLocaleTimeString = function (l, o) { return oTime.call(this, LOCALE, o); };
-          } catch (err) { /* ignore */ }
-        })();
-        </script>
-        """,
-        height=0,
-    )
-
-
-# =============================================================================
 # Page 1 — area of interest, time period, and "start monitoring"
 # =============================================================================
 def render_setup_page():
@@ -4504,71 +4650,52 @@ def render_setup_page():
     # ==========================================================================
     # 2. Time period
     # ==========================================================================
-    _render_step_header(2, "📅", "بازه زمانی")
+    _render_step_header(2, "📅", "بازه زمانی (تقویم میلادی)")
 
-    # Pin the pop-up calendar to the Gregorian calendar with Latin digits,
-    # whatever the viewer's browser locale is (see _force_gregorian_calendar).
-    _force_gregorian_calendar()
-
-    # Two ordinary calendar pickers (st.date_input): clicking a field opens the
-    # familiar month calendar, exactly as in the earlier version of the app.
-    # The defaults are still computed from today's date — one year back to the
-    # current month — so nothing about that behaviour changes; only the way the
-    # user picks the dates does.
+    # The month/year drop-downs below replace the previous calendar widget on
+    # purpose: that widget is rendered by the browser and, on a Persian-locale
+    # browser, it showed a Jalali (solar) calendar. Picking the Gregorian year
+    # and month explicitly removes any dependence on the browser's locale — and
+    # the pipeline works month by month anyway, so the day was never used.
     _today = date.today()
-    _default_end = date(_today.year, _today.month, 1)          # current month
-    _default_start = date(_today.year - 1, _today.month, 1)    # same month, one year earlier
-    _min_date = date(2017, 1, 1)                               # Sentinel-2 L2A archive starts 2017
+    _default_end_year, _default_end_month = _today.year, _today.month
+    _default_start_year, _default_start_month = _today.year - 1, _today.month
 
-    # Unambiguous Gregorian text in the field itself (YYYY/MM/DD). The argument
-    # only exists on newer Streamlit releases, so it is passed conditionally.
-    _date_kwargs = {}
-    try:
-        if 'format' in inspect.signature(st.date_input).parameters:
-            _date_kwargs['format'] = "YYYY/MM/DD"
-    except Exception:
-        pass
+    year_options = list(range(2017, _today.year + 1))   # Sentinel-2 L2A starts 2017
 
-    dc1, dc2 = st.columns(2)
-    # Right-to-left reading order: «از تاریخ» on the right, «تا تاریخ» on the left
-    col_start, col_end = dc2, dc1
+    def _month_label(m):
+        return f"{m:02d} — {GREGORIAN_MONTHS_FA[m - 1]}"
 
-    start_pick = col_start.date_input(
-        "از تاریخ",
-        value=_default_start,
-        min_value=_min_date,
-        disabled=st.session_state.processing_in_progress,
-        key="start_date_pick",
-        **_date_kwargs,
-    )
-    end_pick = col_end.date_input(
-        "تا تاریخ (غیرشامل)",
-        value=_default_end,
-        min_value=_min_date,
-        disabled=st.session_state.processing_in_progress,
-        key="end_date_pick",
-        **_date_kwargs,
-    )
+    dc1, dc2, dc3, dc4 = st.columns(4)
+    # Right-to-left reading order: «از» on the right, «تا» on the left
+    col_start_year, col_start_month, col_end_year, col_end_month = dc4, dc3, dc2, dc1
 
-    # The pipeline works month by month, so both dates are snapped to the first
-    # day of their month. This keeps every monthly composite whole and makes the
-    # result identical to the previous month/year selection.
-    def _month_start(d):
-        return date(d.year, d.month, 1)
+    start_year = col_start_year.selectbox(
+        "از سال (میلادی)", year_options,
+        index=year_options.index(_default_start_year) if _default_start_year in year_options else 0,
+        disabled=st.session_state.processing_in_progress, key="start_year")
+    start_month = col_start_month.selectbox(
+        "از ماه", list(range(1, 13)), index=_default_start_month - 1,
+        format_func=_month_label,
+        disabled=st.session_state.processing_in_progress, key="start_month")
+    end_year = col_end_year.selectbox(
+        "تا سال (میلادی)", year_options,
+        index=year_options.index(_default_end_year) if _default_end_year in year_options else len(year_options) - 1,
+        disabled=st.session_state.processing_in_progress, key="end_year")
+    end_month = col_end_month.selectbox(
+        "تا ماه (غیرشامل)", list(range(1, 13)), index=_default_end_month - 1,
+        format_func=_month_label,
+        disabled=st.session_state.processing_in_progress, key="end_month")
 
-    start = _month_start(start_pick)
-    end = _month_start(end_pick)
+    start = date(start_year, start_month, 1)
+    end = date(end_year, end_month, 1)
 
     if start >= end:
         st.error("بازه تاریخ نامعتبر است — تاریخ پایان باید بعد از تاریخ شروع باشد.")
         st.stop()
 
     months = (end.year - start.year) * 12 + (end.month - start.month)
-    st.info(
-        f"📅 بازه انتخابی: **{months} ماه** "
-        f"(میلادی: از {start.strftime('%Y/%m')} تا {end.strftime('%Y/%m')})"
-    )
-    st.caption("تاریخ‌ها میلادی هستند. پایش ماه‌به‌ماه انجام می‌شود؛ بنابراین روز انتخاب‌شده در تقویم اهمیتی ندارد و ماه کامل در نظر گرفته می‌شود.")
+    st.info(f"📅 بازه انتخابی: **{months} ماه**")
 
     # ==========================================================================
     # 3. Run analysis — fully automatic (preprocessing + both indices)
