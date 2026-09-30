@@ -211,54 +211,6 @@ MIN_FILE_SIZE = 10000
 # interruption instead of re-doing a long stretch of months.
 NETWORK_FAILURE_STREAK = 2
 
-# Earth Engine answering with a throttle/quota error is NOT an internet outage,
-# but there is no point hammering it either: stop after this many in a row and
-# tell the user to wait a few minutes.
-RATE_LIMIT_FAILURE_STREAK = 3
-
-
-def _classify_failure(message):
-    """
-    Decide what kind of problem a month/band failure actually is.
-
-        'network'   -> the link to the internet / Earth Engine is down
-        'ratelimit' -> Earth Engine answered, but is throttling or out of quota
-        'data'      -> Earth Engine answered normally; THIS month is the problem
-                       (empty tile, too few pixels, a GeoTIFF under MIN_FILE_SIZE,
-                       a validation failure)
-
-    Only 'network' justifies reporting a dropped connection, and only 'network'
-    or 'ratelimit' justify halting the whole run. A 'data' failure belongs to
-    one month: halting on it made every «ادامه از محل قطع» replay the same two
-    bad months, fail again and report an internet outage that never happened.
-    """
-    text = str(message or "").lower()
-
-    ratelimit_markers = (
-        "rate limit", "too many requests", "http 429", "quota", "limit exceeded",
-        "resource_exhausted", "user memory limit", "computation timed out",
-        "too many concurrent", "http 403",
-    )
-    network_markers = (
-        "connection error", "connection aborted", "connection reset",
-        "connection refused", "timeout", "timed out", "max retries exceeded",
-        "failed to establish", "name or service not known", "getaddrinfo",
-        "temporary failure in name resolution", "nodename nor servname",
-        "network is unreachable", "no route to host", "broken pipe",
-        "remote end closed", "eof occurred", "ssl", "httpsconnectionpool",
-        "httpconnectionpool", "unreachable", "service unavailable",
-        "http 408", "http 500", "http 502", "http 503", "http 504",
-        "deadline exceeded",
-    )
-
-    for mark in ratelimit_markers:
-        if mark in text:
-            return "ratelimit"
-    for mark in network_markers:
-        if mark in text:
-            return "network"
-    return "data"
-
 # --- Session-independent download cache ---------------------------------------
 # The downloaded GeoTIFFs live in a folder whose name is derived from the run
 # itself (region + dates + settings), not from a random tempfile name. That way
@@ -313,16 +265,6 @@ if 'connection_interrupted' not in st.session_state:
     # Set by the processing loop when the link to Earth Engine drops, so the
     # run stops at that point instead of failing every remaining month
     st.session_state.connection_interrupted = False
-if 'halt_reason' not in st.session_state:
-    # Why the run stopped early: 'network' (the link really is down) or
-    # 'ratelimit' (Earth Engine answered, but is throttling / out of quota).
-    # None when the run was not halted. This is what decides which message the
-    # user sees — the app used to call every stop an internet outage.
-    st.session_state.halt_reason = None
-if 'halt_detail' not in st.session_state:
-    # The actual error text behind the stop, shown to the user so a problem
-    # that is not an internet outage can be recognised as such.
-    st.session_state.halt_detail = ""
 if 'cdom_display_range' not in st.session_state:
     # (vmin, vmax) colour range derived from the CDOM data of the current run
     st.session_state.cdom_display_range = None
@@ -1142,19 +1084,7 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
     # remaining month. Months never attempted keep no status at all, so a
     # resume picks up at the exact point of interruption.
     # ------------------------------------------------------------------
-    # Two separate streaks, because the three kinds of failure mean three
-    # different things (see _classify_failure). Counting them all together is
-    # what made the app declare an internet outage whenever two months in a row
-    # failed for a reason of their own — and, because such a failure repeats
-    # identically on the next attempt, made «ادامه از محل قطع» stop on the very
-    # same two months and report the same outage again, forever.
-    consecutive_network = 0
-    consecutive_ratelimit = 0
-
-    def _halt(kind, detail):
-        st.session_state.connection_interrupted = True
-        st.session_state.halt_reason = kind
-        st.session_state.halt_detail = str(detail)
+    consecutive_failures = 0
 
     for month_info in months_to_process:
         month_name = month_info['month_name']
@@ -1164,40 +1094,26 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             composite, count, stats = get_monthly_composite(
                 wq_collection, aoi, month_info['year'], month_info['month']
             )
-        except Exception as e:
-            # Mark as failed and continue to next month
+        except Exception:
+            # Network or EE error — mark as failed and continue to next month
             st.session_state.month_statuses[parameter_type][month_name] = {
-                'status': STATUS_FAILED, 'message': f'EE request failed: {e}'
+                'status': STATUS_FAILED, 'message': 'EE request failed'
             }
             processed_count += 1
             if progress_callback:
                 progress_callback(processed_count, total_months, month_name)
 
-            kind = _classify_failure(e)
-            if kind == 'network':
-                consecutive_network += 1
-                consecutive_ratelimit = 0
-                if consecutive_network >= NETWORK_FAILURE_STREAK:
-                    _halt('network', e)
-                    break
-            elif kind == 'ratelimit':
-                consecutive_ratelimit += 1
-                consecutive_network = 0
-                if consecutive_ratelimit >= RATE_LIMIT_FAILURE_STREAK:
-                    _halt('ratelimit', e)
-                    break
-            else:
-                # Earth Engine answered; this month is simply unusable.
-                consecutive_network = 0
-                consecutive_ratelimit = 0
+            consecutive_failures += 1
+            if consecutive_failures >= NETWORK_FAILURE_STREAK:
+                st.session_state.connection_interrupted = True
+                break
             continue
 
         if composite is None or count == 0:
             st.session_state.month_statuses[parameter_type][month_name] = {
                 'status': STATUS_NO_DATA, 'message': 'No images'
             }
-            consecutive_network = 0    # the server answered: the link is fine
-            consecutive_ratelimit = 0
+            consecutive_failures = 0   # the server answered: the link is fine
             processed_count += 1
             if progress_callback:
                 progress_callback(processed_count, total_months, month_name)
@@ -1220,31 +1136,16 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             st.session_state.downloaded_months[parameter_type][month_name] = {
                 'wq_index': wq_path, 'rgb': rgb_path
             }
-            consecutive_network = 0
-            consecutive_ratelimit = 0
+            consecutive_failures = 0
         else:
-            kind = _classify_failure(message)
-            if kind == 'network':
-                consecutive_network += 1
-                consecutive_ratelimit = 0
-            elif kind == 'ratelimit':
-                consecutive_ratelimit += 1
-                consecutive_network = 0
-            else:
-                # A problem with this month's tile, not with the connection:
-                # record it, move on, and let the run reach the good months.
-                consecutive_network = 0
-                consecutive_ratelimit = 0
+            consecutive_failures += 1
 
         processed_count += 1
         if progress_callback:
             progress_callback(processed_count, total_months, month_name)
 
-        if consecutive_network >= NETWORK_FAILURE_STREAK:
-            _halt('network', message)
-            break
-        if consecutive_ratelimit >= RATE_LIMIT_FAILURE_STREAK:
-            _halt('ratelimit', message)
+        if consecutive_failures >= NETWORK_FAILURE_STREAK:
+            st.session_state.connection_interrupted = True
             break
 
     # ------------------------------------------------------------------
@@ -1290,8 +1191,6 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
       handler can pass it to a resume run later.
     """
     st.session_state.connection_interrupted = False
-    st.session_state.halt_reason = None
-    st.session_state.halt_detail = ""
     prune_old_cache_dirs()
 
     # Cache folder for this exact run (see get_cache_dir_for_config): the same
@@ -1412,17 +1311,10 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
         # downloaded is on disk and in session state; the months that were never
         # attempted carry no status at all, so «ادامه از محل قطع» continues from
         # exactly this point rather than repeating earlier months.
-        if st.session_state.get('halt_reason') == 'ratelimit':
-            stage_text.markdown(
-                "⏳ سرویس گوگل ارث‌انجین موقتاً درخواست‌ها را محدود کرده است "
-                "(سهمیه/محدودیت نرخ) و پایش در همان نقطه متوقف شد — "
-                "ماه‌های دریافت‌شده حفظ شده‌اند."
-            )
-        else:
-            stage_text.markdown(
-                "⛔ ارتباط با سرور قطع شد و پایش در همان نقطه متوقف شد — "
-                "ماه‌های دریافت‌شده حفظ شده‌اند."
-            )
+        stage_text.markdown(
+            "⛔ ارتباط با سرور قطع شد و پایش در همان نقطه متوقف شد — "
+            "ماه‌های دریافت‌شده حفظ شده‌اند."
+        )
         st.session_state.resume_after_interruption = True
     else:
         progress_bar.progress(1.0)
@@ -1810,10 +1702,9 @@ def _get_roi_center_coordinates():
 def render_parameter_page(parameter_type):
     """
     Full page for one parameter, in the required order:
-    0. Expert AI brief for this parameter (تحلیل کارشناسی)
     1. Statistics Summary (خلاصه آماری)
-    2. Time-series chart
-    3. Legend + Management Guidance Panel (راهنمای رنگ و تفسیر مدیریتی)
+    2. Legend + Management Guidance Panel
+    3. Time-series chart
     4. Side-by-side imagery (collapsible)
     """
     if parameter_type == PARAM_TURBIDITY:
@@ -1825,16 +1716,13 @@ def render_parameter_page(parameter_type):
 
     results = st.session_state.results.get(parameter_type, [])
 
-    # Expert brief at the very top — generated once per parameter per run.
+    # Expert brief for THIS parameter, at the very top of the page.
+    # Generated once per parameter per monitoring run and then cached.
     if results:
         _render_param_brief(parameter_type)
 
     if results:
         display_statistics_summary(results, parameter_type)
-        st.divider()
-
-        # Time-series chart directly under the statistics summary
-        display_time_series_chart(results, parameter_type)
         st.divider()
 
     if parameter_type == PARAM_TURBIDITY:
@@ -1849,6 +1737,11 @@ def render_parameter_page(parameter_type):
     if not results:
         st.info("برای مشاهده نتایج، ابتدا یک منطقه را انتخاب و پایش را اجرا کنید.")
         return
+
+    # Time-series chart first (right after the legend), processed imagery after
+    display_time_series_chart(results, parameter_type)
+
+    st.divider()
 
     with st.expander("🖼️ تصاویر پردازش‌شده (برای نمایش/پنهان‌سازی کلیک کنید)", expanded=False):
         display_side_by_side_imagery(results, parameter_type)
@@ -2179,7 +2072,7 @@ EXECUTIVE_SUMMARY_PROMPT = """یک «خلاصه مدیریتی» از وضعیت
 
 
 # =============================================================================
-# تحلیل کارشناسی بالای هر صفحه پارامتر — one short brief per parameter page
+# تحلیل کارشناسی بالای هر صفحه پارامتر — one brief per parameter page
 # =============================================================================
 # Same expert agent, same system prompt, same analysis JSON as the chat page —
 # only the question differs. One brief per parameter, generated the first time
@@ -2358,11 +2251,14 @@ PARAM_PAGE_SUMMARY_PROMPTS = {
     PARAM_CDOM:        CDOM_PAGE_SUMMARY_PROMPT,
 }
 
-# Card theme + title for the brief shown at the top of each parameter page.
+# Card theme (CSS class) + icon + title for the brief on each parameter page.
 PARAM_BRIEF_THEME = {
-    PARAM_TURBIDITY:   ("wq-brief-turbidity",   "🧠", "تحلیل کارشناسی هوش مصنوعی — گل‌آلودگی آب"),
-    PARAM_CHLOROPHYLL: ("wq-brief-chlorophyll", "🧠", "تحلیل کارشناسی هوش مصنوعی — رشد جلبک"),
-    PARAM_CDOM:        ("wq-brief-cdom",        "🧠", "تحلیل کارشناسی هوش مصنوعی — مواد آلی محلول در آب"),
+    PARAM_TURBIDITY:   ("wq-brief-turbidity",   "🧠",
+                        "تحلیل کارشناسی هوش مصنوعی — گل‌آلودگی آب"),
+    PARAM_CHLOROPHYLL: ("wq-brief-chlorophyll", "🧠",
+                        "تحلیل کارشناسی هوش مصنوعی — رشد جلبک"),
+    PARAM_CDOM:        ("wq-brief-cdom",        "🧠",
+                        "تحلیل کارشناسی هوش مصنوعی — مواد آلی محلول در آب"),
 }
 
 
@@ -2810,128 +2706,104 @@ def _inject_persian_chat_css():
     )
 
 
-def _style_quick_buttons_js():
+def _force_quick_button_style():
     """
-    Style the two ready-made question buttons directly, with inline styles.
+    Version-independent styling for the two ready-made question buttons
+    («⚡ بررسی خلاصه و سریع» and «🔬 بررسی جامع و دقیق»).
 
-    WHY THIS EXISTS: styling a Streamlit button from a stylesheet means hooking
-    onto Streamlit's own DOM — either the `st-key-<key>` class (only emitted by
-    newer Streamlit versions) or a positional `:has()` selector (only honoured
-    by newer browsers). When either assumption fails, the whole rule is skipped
-    and the buttons fall back to Streamlit's plain default look. This helper
-    removes both assumptions: it finds the buttons by their Persian label text
-    and writes the styles straight onto the elements, which no stylesheet can
-    override. A MutationObserver re-applies them after every Streamlit rerun.
+    The CSS rules in _inject_global_app_css() reach those buttons through
+    Streamlit's per-key element class (st-key-wqquick_*) and a :has()
+    positional fallback. Both depend on Streamlit's internal DOM, so on some
+    Streamlit versions neither selector matches and the buttons keep their
+    default look.
 
-    The CSS rules in _inject_global_app_css() are kept as well; where they do
-    work, the two paths produce exactly the same appearance.
+    This helper depends on neither. A tiny invisible component finds the two
+    buttons in the parent document by their visible label and writes the
+    styles straight onto the elements with `important`, re-applying them after
+    every Streamlit rerun. It is purely presentational: it changes no labels,
+    no keys, no behaviour, and touches nothing outside these two buttons.
     """
     import streamlit.components.v1 as components
 
     components.html(
         """
-<script>
-(function () {
-    var BRIEF = {
-        match: "بررسی خلاصه و سریع",
-        bg: "linear-gradient(135deg, #E8A33A 0%, #C2700C 100%)",
-        shadow: "0 8px 22px rgba(194, 112, 12, 0.40)",
-        hover: "0 12px 28px rgba(194, 112, 12, 0.52)"
-    };
-    var DEEP = {
-        match: "بررسی جامع و دقیق",
-        bg: "linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%)",
-        shadow: "0 8px 22px rgba(10, 63, 74, 0.40)",
-        hover: "0 12px 28px rgba(10, 63, 74, 0.52)"
-    };
-    var FONT = '"B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif';
-    var SIZE = "2.05rem";
+        <script>
+        (function () {
+          var DOC = null;
+          try { DOC = window.parent ? window.parent.document : null; } catch (err) { DOC = null; }
+          if (!DOC) { return; }
 
-    function set(el, prop, val) { el.style.setProperty(prop, val, "important"); }
+          var FONT = '"B Nazanin","BNazanin","Vazirmatn",Tahoma,sans-serif';
+          var SIZE = '2.3rem';
+          var WEIGHT = '900';
+          var LINE = '1.8';
 
-    function paint(btn, spec) {
-        set(btn, "background", spec.bg);
-        set(btn, "background-image", spec.bg);
-        set(btn, "box-shadow", spec.shadow);
-        set(btn, "border", "none");
-        set(btn, "border-radius", "20px");
-        set(btn, "min-height", "5.8rem");
-        set(btn, "padding", "0.9rem 1.4rem");
-        set(btn, "color", "#ffffff");
-        set(btn, "direction", "rtl");
-        set(btn, "font-family", FONT);
-        set(btn, "font-size", SIZE);
-        set(btn, "font-weight", "800");
-        set(btn, "line-height", "1.75");
-        set(btn, "letter-spacing", "0.2px");
-        set(btn, "text-shadow", "0 1px 2px rgba(0, 0, 0, 0.22)");
-        set(btn, "width", "100%");
-        set(btn, "transition", "transform .16s ease, box-shadow .16s ease, filter .16s ease");
+          var TARGETS = [
+            { text: 'بررسی خلاصه و سریع',
+              bg: 'linear-gradient(135deg,#FFB43D 0%,#F0890F 45%,#C2570A 100%)',
+              shadow: '0 10px 26px rgba(194,87,10,0.45)' },
+            { text: 'بررسی جامع و دقیق',
+              bg: 'linear-gradient(135deg,#072F38 0%,#0B6E76 50%,#16A9B5 100%)',
+              shadow: '0 10px 26px rgba(7,47,56,0.45)' }
+          ];
 
-        var inner = btn.querySelectorAll("p, div, span");
-        for (var i = 0; i < inner.length; i++) {
-            set(inner[i], "font-family", FONT);
-            set(inner[i], "font-size", SIZE);
-            set(inner[i], "font-weight", "800");
-            set(inner[i], "line-height", "1.75");
-            set(inner[i], "color", "#ffffff");
-            set(inner[i], "margin", "0");
-        }
+          function set(el, prop, val) {
+            try { el.style.setProperty(prop, val, 'important'); } catch (err) { /* ignore */ }
+          }
 
-        if (btn.getAttribute("data-wq-hover") !== "1") {
-            btn.setAttribute("data-wq-hover", "1");
-            btn.addEventListener("mouseenter", function () {
-                set(btn, "transform", "translateY(-3px)");
-                set(btn, "box-shadow", spec.hover);
-                set(btn, "filter", "brightness(1.06)");
-            });
-            btn.addEventListener("mouseleave", function () {
-                set(btn, "transform", "translateY(0)");
-                set(btn, "box-shadow", spec.shadow);
-                set(btn, "filter", "none");
-            });
-        }
-    }
+          function paint() {
+            var buttons = DOC.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {
+              var btn = buttons[i];
+              var label = (btn.innerText || btn.textContent || '').trim();
+              for (var j = 0; j < TARGETS.length; j++) {
+                var t = TARGETS[j];
+                if (label.indexOf(t.text) === -1) { continue; }
 
-    function sweep(doc) {
-        var buttons = doc.querySelectorAll("button");
-        for (var i = 0; i < buttons.length; i++) {
-            var btn = buttons[i];
-            var label = (btn.innerText || btn.textContent || "");
-            if (label.indexOf(BRIEF.match) !== -1)      { paint(btn, BRIEF); }
-            else if (label.indexOf(DEEP.match) !== -1)  { paint(btn, DEEP); }
-        }
-    }
+                set(btn, 'background', t.bg);
+                set(btn, 'background-image', t.bg);
+                set(btn, 'box-shadow', t.shadow);
+                set(btn, 'border', 'none');
+                set(btn, 'border-radius', '22px');
+                set(btn, 'min-height', '6.5rem');
+                set(btn, 'padding', '1.15rem 1.7rem');
+                set(btn, 'color', '#FFFFFF');
+                set(btn, 'direction', 'rtl');
+                set(btn, 'font-family', FONT);
+                set(btn, 'font-size', SIZE);
+                set(btn, 'font-weight', WEIGHT);
+                set(btn, 'line-height', LINE);
+                set(btn, 'letter-spacing', '0.3px');
+                set(btn, 'text-shadow', '0 2px 4px rgba(0,0,0,0.28)');
 
-    function start() {
-        var doc;
-        try { doc = window.parent.document; } catch (e) { return; }
-        if (!doc || !doc.body) { return; }
+                var kids = btn.querySelectorAll('*');
+                for (var k = 0; k < kids.length; k++) {
+                  set(kids[k], 'font-family', FONT);
+                  set(kids[k], 'font-size', SIZE);
+                  set(kids[k], 'font-weight', WEIGHT);
+                  set(kids[k], 'line-height', LINE);
+                  set(kids[k], 'color', '#FFFFFF');
+                  set(kids[k], 'margin', '0');
+                }
+              }
+            }
+          }
 
-        sweep(doc);
+          paint();
 
-        // Streamlit rebuilds the button nodes on every rerun, so re-apply.
-        if (!window.parent.__wqQuickObserver) {
-            var obs = new MutationObserver(function () { sweep(doc); });
-            obs.observe(doc.body, { childList: true, subtree: true });
-            window.parent.__wqQuickObserver = obs;
-        }
+          // Streamlit rebuilds the DOM on every rerun, so keep re-applying.
+          try {
+            new MutationObserver(paint).observe(DOC.body, { childList: true, subtree: true });
+          } catch (err) { /* ignore */ }
 
-        // Safety net for the first couple of seconds after a page switch.
-        var n = 0;
-        var timer = setInterval(function () {
-            sweep(doc);
-            if (++n > 12) { clearInterval(timer); }
-        }, 250);
-    }
-
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", start);
-    } else {
-        start();
-    }
-})();
-</script>
+          var n = 0;
+          var timer = setInterval(function () {
+            paint();
+            n += 1;
+            if (n > 60) { clearInterval(timer); }
+          }, 250);
+        })();
+        </script>
         """,
         height=0,
     )
@@ -2998,11 +2870,12 @@ def _render_param_brief_card(parameter_type, brief_text):
     import html as _html
 
     css_class, icon, title = PARAM_BRIEF_THEME.get(
-        parameter_type, ("wq-brief-turbidity", "🧠", "تحلیل کارشناسی هوش مصنوعی")
+        parameter_type,
+        ("wq-brief-turbidity", "\U0001f9e0", "تحلیل کارشناسی هوش مصنوعی"),
     )
 
-    # The brief is asked for as a single paragraph; collapse any stray newlines
-    # so it always renders as one justified block of text.
+    # The brief is asked for as one paragraph; collapse any stray newlines so it
+    # always renders as a single justified block of text.
     body = " ".join(str(brief_text).split())
 
     st.markdown(
@@ -3137,6 +3010,9 @@ def render_expert_chat_tab():
     پاسخ به سؤال مستقیم درباره‌ی وضعیت هوا.
     """
     _inject_persian_chat_css()
+    # Styles the two ready-made question buttons regardless of the Streamlit
+    # version's DOM/class naming (see _force_quick_button_style). Invisible.
+    _force_quick_button_style()
 
     _render_active_section_badge("💬", "چت با متخصص آب", "#E08E0B", "#F5A524")
 
@@ -3181,9 +3057,6 @@ def render_expert_chat_tab():
                         help="تحلیل کامل هر سه شاخص: روند، الگوی فصلی، ناهنجاری‌ها، همبستگی‌ها و توصیه‌ها"):
         quick_question = QUICK_DEEP_PROMPT
         quick_label = "🔬 بررسی جامع و دقیق"
-
-    # Applied after the buttons exist, so the very first pass already finds them.
-    _style_quick_buttons_js()
 
     st.divider()
 
@@ -3928,76 +3801,82 @@ def _inject_global_app_css():
 
         /* --- size / shape / typography (primary selector) --- */
         div[class*="st-key-wqquick_"] .stButton > button {
-            min-height: 5.8rem !important;
-            padding: 0.9rem 1.4rem !important;
-            border-radius: 20px !important;
+            min-height: 6.5rem !important;
+            padding: 1.15rem 1.7rem !important;
+            border-radius: 22px !important;
             border: none !important;
-            color: #ffffff !important;
+            color: #FFFFFF !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.05rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            letter-spacing: 0.2px;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            letter-spacing: 0.3px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
             transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
         }
+        /* every inner node Streamlit puts inside the button (p / div / span / markdown) */
+        div[class*="st-key-wqquick_"] .stButton > button *,
         div[class*="st-key-wqquick_"] .stButton > button p,
         div[class*="st-key-wqquick_"] .stButton > button div,
         div[class*="st-key-wqquick_"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.05rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            color: #ffffff !important;
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            color: #FFFFFF !important;
             margin: 0 !important;
         }
 
         /* --- same size / typography via the positional fallback selector.
                Carries NO background, so the per-button gradients below always win. --- */
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
-            min-height: 5.8rem !important;
-            padding: 0.9rem 1.4rem !important;
-            border-radius: 20px !important;
+            min-height: 6.5rem !important;
+            padding: 1.15rem 1.7rem !important;
+            border-radius: 22px !important;
             border: none !important;
-            color: #ffffff !important;
+            color: #FFFFFF !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.05rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            letter-spacing: 0.3px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
         }
+        [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button *,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button p,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button div,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 2.05rem !important;
-            font-weight: 800 !important;
-            line-height: 1.75 !important;
-            color: #ffffff !important;
+            font-size: 2.3rem !important;
+            font-weight: 900 !important;
+            line-height: 1.8 !important;
+            color: #FFFFFF !important;
             margin: 0 !important;
         }
 
-        /* --- colour: quick look — warm sand / amber, reads as "fast" --- */
+        /* --- colour: quick look — warm amber / sunset, reads as "fast" --- */
         div[class*="st-key-wqquick_brief"] .stButton > button {
-            background: linear-gradient(135deg, #E8A33A 0%, #C2700C 100%) !important;
-            box-shadow: 0 8px 22px rgba(194, 112, 12, 0.40) !important;
+            background: linear-gradient(135deg, #FFB43D 0%, #F0890F 45%, #C2570A 100%) !important;
+            box-shadow: 0 10px 26px rgba(194, 87, 10, 0.45) !important;
         }
         div[class*="st-key-wqquick_brief"] .stButton > button:hover {
-            box-shadow: 0 12px 28px rgba(194, 112, 12, 0.50) !important;
+            background: linear-gradient(135deg, #FFC15C 0%, #F5941B 45%, #A8480A 100%) !important;
+            box-shadow: 0 14px 32px rgba(194, 87, 10, 0.55) !important;
         }
         /* --- colour: full analysis — deep water teal, reads as "thorough" --- */
         div[class*="st-key-wqquick_deep"] .stButton > button {
-            background: linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%) !important;
-            box-shadow: 0 8px 22px rgba(10, 63, 74, 0.40) !important;
+            background: linear-gradient(135deg, #072F38 0%, #0B6E76 50%, #16A9B5 100%) !important;
+            box-shadow: 0 10px 26px rgba(7, 47, 56, 0.45) !important;
         }
         div[class*="st-key-wqquick_deep"] .stButton > button:hover {
-            box-shadow: 0 12px 28px rgba(10, 63, 74, 0.50) !important;
+            background: linear-gradient(135deg, #051F26 0%, #0A5E66 50%, #129AA6 100%) !important;
+            box-shadow: 0 14px 32px rgba(7, 47, 56, 0.55) !important;
         }
         div[class*="st-key-wqquick_"] .stButton > button:hover {
             transform: translateY(-3px);
-            filter: brightness(1.06);
+            filter: brightness(1.05);
         }
         div[class*="st-key-wqquick_"] .stButton > button:active {
             transform: translateY(0);
@@ -5122,33 +5001,10 @@ def render_setup_page():
 
     # Hint when a partial run can be resumed
     if st.session_state.resume_after_interruption and not st.session_state.processing_in_progress:
-        if st.session_state.get('halt_reason') == 'ratelimit':
-            st.warning(
-                "⏳ پایش متوقف شد چون سرویس گوگل ارث‌انجین موقتاً درخواست‌ها را محدود کرده است "
-                "(این مشکلِ اینترنت شما نیست). چند دقیقه صبر کنید و سپس دکمه «ادامه از محل قطع» "
-                "را فشار دهید؛ ماه‌های دریافت‌شده حفظ شده‌اند."
-            )
-        else:
-            st.warning(
-                "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
-                "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
-            )
-
-        # The real error behind the stop, plus every month that failed and why.
-        # Without this the only thing the user could ever see was «قطعی اینترنت»,
-        # even when the cause was something else entirely.
-        detail = st.session_state.get('halt_detail') or ""
-        failed_rows = []
-        for _p in ALL_PARAMETERS:
-            for _m, _s in sorted(st.session_state.month_statuses.get(_p, {}).items()):
-                if _s.get('status') == STATUS_FAILED:
-                    failed_rows.append(f"- {param_persian_name(_p)} — {_m}: {_s.get('message', '')}")
-        if detail or failed_rows:
-            with st.expander("🔍 جزئیات فنی خطا (برای بررسی علت)", expanded=False):
-                if detail:
-                    st.code(detail)
-                if failed_rows:
-                    st.markdown("\n".join(failed_rows[:40]))
+        st.warning(
+            "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
+            "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
+        )
 
     # --- Run status + clear-results action, directly under the run buttons ---
     _render_status_strip()
