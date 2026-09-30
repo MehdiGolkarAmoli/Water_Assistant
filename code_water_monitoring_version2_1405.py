@@ -2702,6 +2702,133 @@ def _inject_persian_chat_css():
     )
 
 
+def _style_quick_buttons_js():
+    """
+    Style the two ready-made question buttons directly, with inline styles.
+
+    WHY THIS EXISTS: styling a Streamlit button from a stylesheet means hooking
+    onto Streamlit's own DOM — either the `st-key-<key>` class (only emitted by
+    newer Streamlit versions) or a positional `:has()` selector (only honoured
+    by newer browsers). When either assumption fails, the whole rule is skipped
+    and the buttons fall back to Streamlit's plain default look. This helper
+    removes both assumptions: it finds the buttons by their Persian label text
+    and writes the styles straight onto the elements, which no stylesheet can
+    override. A MutationObserver re-applies them after every Streamlit rerun.
+
+    The CSS rules in _inject_global_app_css() are kept as well; where they do
+    work, the two paths produce exactly the same appearance.
+    """
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+<script>
+(function () {
+    var BRIEF = {
+        match: "بررسی خلاصه و سریع",
+        bg: "linear-gradient(135deg, #E8A33A 0%, #C2700C 100%)",
+        shadow: "0 8px 22px rgba(194, 112, 12, 0.40)",
+        hover: "0 12px 28px rgba(194, 112, 12, 0.52)"
+    };
+    var DEEP = {
+        match: "بررسی جامع و دقیق",
+        bg: "linear-gradient(135deg, #0A3F4A 0%, #0E8E99 100%)",
+        shadow: "0 8px 22px rgba(10, 63, 74, 0.40)",
+        hover: "0 12px 28px rgba(10, 63, 74, 0.52)"
+    };
+    var FONT = '"B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif';
+    var SIZE = "2.05rem";
+
+    function set(el, prop, val) { el.style.setProperty(prop, val, "important"); }
+
+    function paint(btn, spec) {
+        set(btn, "background", spec.bg);
+        set(btn, "background-image", spec.bg);
+        set(btn, "box-shadow", spec.shadow);
+        set(btn, "border", "none");
+        set(btn, "border-radius", "20px");
+        set(btn, "min-height", "5.8rem");
+        set(btn, "padding", "0.9rem 1.4rem");
+        set(btn, "color", "#ffffff");
+        set(btn, "direction", "rtl");
+        set(btn, "font-family", FONT);
+        set(btn, "font-size", SIZE);
+        set(btn, "font-weight", "800");
+        set(btn, "line-height", "1.75");
+        set(btn, "letter-spacing", "0.2px");
+        set(btn, "text-shadow", "0 1px 2px rgba(0, 0, 0, 0.22)");
+        set(btn, "width", "100%");
+        set(btn, "transition", "transform .16s ease, box-shadow .16s ease, filter .16s ease");
+
+        var inner = btn.querySelectorAll("p, div, span");
+        for (var i = 0; i < inner.length; i++) {
+            set(inner[i], "font-family", FONT);
+            set(inner[i], "font-size", SIZE);
+            set(inner[i], "font-weight", "800");
+            set(inner[i], "line-height", "1.75");
+            set(inner[i], "color", "#ffffff");
+            set(inner[i], "margin", "0");
+        }
+
+        if (btn.getAttribute("data-wq-hover") !== "1") {
+            btn.setAttribute("data-wq-hover", "1");
+            btn.addEventListener("mouseenter", function () {
+                set(btn, "transform", "translateY(-3px)");
+                set(btn, "box-shadow", spec.hover);
+                set(btn, "filter", "brightness(1.06)");
+            });
+            btn.addEventListener("mouseleave", function () {
+                set(btn, "transform", "translateY(0)");
+                set(btn, "box-shadow", spec.shadow);
+                set(btn, "filter", "none");
+            });
+        }
+    }
+
+    function sweep(doc) {
+        var buttons = doc.querySelectorAll("button");
+        for (var i = 0; i < buttons.length; i++) {
+            var btn = buttons[i];
+            var label = (btn.innerText || btn.textContent || "");
+            if (label.indexOf(BRIEF.match) !== -1)      { paint(btn, BRIEF); }
+            else if (label.indexOf(DEEP.match) !== -1)  { paint(btn, DEEP); }
+        }
+    }
+
+    function start() {
+        var doc;
+        try { doc = window.parent.document; } catch (e) { return; }
+        if (!doc || !doc.body) { return; }
+
+        sweep(doc);
+
+        // Streamlit rebuilds the button nodes on every rerun, so re-apply.
+        if (!window.parent.__wqQuickObserver) {
+            var obs = new MutationObserver(function () { sweep(doc); });
+            obs.observe(doc.body, { childList: true, subtree: true });
+            window.parent.__wqQuickObserver = obs;
+        }
+
+        // Safety net for the first couple of seconds after a page switch.
+        var n = 0;
+        var timer = setInterval(function () {
+            sweep(doc);
+            if (++n > 12) { clearInterval(timer); }
+        }, 250);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start);
+    } else {
+        start();
+    }
+})();
+</script>
+        """,
+        height=0,
+    )
+
+
 def _ensure_expert_analysis():
     """
     Make sure the statistical-analysis JSON for the current monitoring results
@@ -2946,6 +3073,9 @@ def render_expert_chat_tab():
                         help="تحلیل کامل هر سه شاخص: روند، الگوی فصلی، ناهنجاری‌ها، همبستگی‌ها و توصیه‌ها"):
         quick_question = QUICK_DEEP_PROMPT
         quick_label = "🔬 بررسی جامع و دقیق"
+
+    # Applied after the buttons exist, so the very first pass already finds them.
+    _style_quick_buttons_js()
 
     st.divider()
 
@@ -3690,14 +3820,14 @@ def _inject_global_app_css():
 
         /* --- size / shape / typography (primary selector) --- */
         div[class*="st-key-wqquick_"] .stButton > button {
-            min-height: 5.3rem !important;
+            min-height: 5.8rem !important;
             padding: 0.9rem 1.4rem !important;
             border-radius: 20px !important;
             border: none !important;
             color: #ffffff !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
+            font-size: 2.05rem !important;
             font-weight: 800 !important;
             line-height: 1.75 !important;
             letter-spacing: 0.2px;
@@ -3708,7 +3838,7 @@ def _inject_global_app_css():
         div[class*="st-key-wqquick_"] .stButton > button div,
         div[class*="st-key-wqquick_"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
+            font-size: 2.05rem !important;
             font-weight: 800 !important;
             line-height: 1.75 !important;
             color: #ffffff !important;
@@ -3718,14 +3848,14 @@ def _inject_global_app_css():
         /* --- same size / typography via the positional fallback selector.
                Carries NO background, so the per-button gradients below always win. --- */
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button {
-            min-height: 5.3rem !important;
+            min-height: 5.8rem !important;
             padding: 0.9rem 1.4rem !important;
             border-radius: 20px !important;
             border: none !important;
             color: #ffffff !important;
             direction: rtl !important;
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
+            font-size: 2.05rem !important;
             font-weight: 800 !important;
             line-height: 1.75 !important;
             text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
@@ -3734,7 +3864,7 @@ def _inject_global_app_css():
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button div,
         [data-testid="stElementContainer"]:has(.wq-quick-anchor) + [data-testid="stHorizontalBlock"] .stButton > button span {
             font-family: "B Nazanin", "BNazanin", "Vazirmatn", Tahoma, sans-serif !important;
-            font-size: 1.9rem !important;
+            font-size: 2.05rem !important;
             font-weight: 800 !important;
             line-height: 1.75 !important;
             color: #ffffff !important;
