@@ -211,6 +211,54 @@ MIN_FILE_SIZE = 10000
 # interruption instead of re-doing a long stretch of months.
 NETWORK_FAILURE_STREAK = 2
 
+# Earth Engine answering with a throttle/quota error is NOT an internet outage,
+# but there is no point hammering it either: stop after this many in a row and
+# tell the user to wait a few minutes.
+RATE_LIMIT_FAILURE_STREAK = 3
+
+
+def _classify_failure(message):
+    """
+    Decide what kind of problem a month/band failure actually is.
+
+        'network'   -> the link to the internet / Earth Engine is down
+        'ratelimit' -> Earth Engine answered, but is throttling or out of quota
+        'data'      -> Earth Engine answered normally; THIS month is the problem
+                       (empty tile, too few pixels, a GeoTIFF under MIN_FILE_SIZE,
+                       a validation failure)
+
+    Only 'network' justifies reporting a dropped connection, and only 'network'
+    or 'ratelimit' justify halting the whole run. A 'data' failure belongs to
+    one month: halting on it made every «ادامه از محل قطع» replay the same two
+    bad months, fail again and report an internet outage that never happened.
+    """
+    text = str(message or "").lower()
+
+    ratelimit_markers = (
+        "rate limit", "too many requests", "http 429", "quota", "limit exceeded",
+        "resource_exhausted", "user memory limit", "computation timed out",
+        "too many concurrent", "http 403",
+    )
+    network_markers = (
+        "connection error", "connection aborted", "connection reset",
+        "connection refused", "timeout", "timed out", "max retries exceeded",
+        "failed to establish", "name or service not known", "getaddrinfo",
+        "temporary failure in name resolution", "nodename nor servname",
+        "network is unreachable", "no route to host", "broken pipe",
+        "remote end closed", "eof occurred", "ssl", "httpsconnectionpool",
+        "httpconnectionpool", "unreachable", "service unavailable",
+        "http 408", "http 500", "http 502", "http 503", "http 504",
+        "deadline exceeded",
+    )
+
+    for mark in ratelimit_markers:
+        if mark in text:
+            return "ratelimit"
+    for mark in network_markers:
+        if mark in text:
+            return "network"
+    return "data"
+
 # --- Session-independent download cache ---------------------------------------
 # The downloaded GeoTIFFs live in a folder whose name is derived from the run
 # itself (region + dates + settings), not from a random tempfile name. That way
@@ -265,6 +313,16 @@ if 'connection_interrupted' not in st.session_state:
     # Set by the processing loop when the link to Earth Engine drops, so the
     # run stops at that point instead of failing every remaining month
     st.session_state.connection_interrupted = False
+if 'halt_reason' not in st.session_state:
+    # Why the run stopped early: 'network' (the link really is down) or
+    # 'ratelimit' (Earth Engine answered, but is throttling / out of quota).
+    # None when the run was not halted. This is what decides which message the
+    # user sees — the app used to call every stop an internet outage.
+    st.session_state.halt_reason = None
+if 'halt_detail' not in st.session_state:
+    # The actual error text behind the stop, shown to the user so a problem
+    # that is not an internet outage can be recognised as such.
+    st.session_state.halt_detail = ""
 if 'cdom_display_range' not in st.session_state:
     # (vmin, vmax) colour range derived from the CDOM data of the current run
     st.session_state.cdom_display_range = None
@@ -1084,7 +1142,19 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
     # remaining month. Months never attempted keep no status at all, so a
     # resume picks up at the exact point of interruption.
     # ------------------------------------------------------------------
-    consecutive_failures = 0
+    # Two separate streaks, because the three kinds of failure mean three
+    # different things (see _classify_failure). Counting them all together is
+    # what made the app declare an internet outage whenever two months in a row
+    # failed for a reason of their own — and, because such a failure repeats
+    # identically on the next attempt, made «ادامه از محل قطع» stop on the very
+    # same two months and report the same outage again, forever.
+    consecutive_network = 0
+    consecutive_ratelimit = 0
+
+    def _halt(kind, detail):
+        st.session_state.connection_interrupted = True
+        st.session_state.halt_reason = kind
+        st.session_state.halt_detail = str(detail)
 
     for month_info in months_to_process:
         month_name = month_info['month_name']
@@ -1094,26 +1164,40 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             composite, count, stats = get_monthly_composite(
                 wq_collection, aoi, month_info['year'], month_info['month']
             )
-        except Exception:
-            # Network or EE error — mark as failed and continue to next month
+        except Exception as e:
+            # Mark as failed and continue to next month
             st.session_state.month_statuses[parameter_type][month_name] = {
-                'status': STATUS_FAILED, 'message': 'EE request failed'
+                'status': STATUS_FAILED, 'message': f'EE request failed: {e}'
             }
             processed_count += 1
             if progress_callback:
                 progress_callback(processed_count, total_months, month_name)
 
-            consecutive_failures += 1
-            if consecutive_failures >= NETWORK_FAILURE_STREAK:
-                st.session_state.connection_interrupted = True
-                break
+            kind = _classify_failure(e)
+            if kind == 'network':
+                consecutive_network += 1
+                consecutive_ratelimit = 0
+                if consecutive_network >= NETWORK_FAILURE_STREAK:
+                    _halt('network', e)
+                    break
+            elif kind == 'ratelimit':
+                consecutive_ratelimit += 1
+                consecutive_network = 0
+                if consecutive_ratelimit >= RATE_LIMIT_FAILURE_STREAK:
+                    _halt('ratelimit', e)
+                    break
+            else:
+                # Earth Engine answered; this month is simply unusable.
+                consecutive_network = 0
+                consecutive_ratelimit = 0
             continue
 
         if composite is None or count == 0:
             st.session_state.month_statuses[parameter_type][month_name] = {
                 'status': STATUS_NO_DATA, 'message': 'No images'
             }
-            consecutive_failures = 0   # the server answered: the link is fine
+            consecutive_network = 0    # the server answered: the link is fine
+            consecutive_ratelimit = 0
             processed_count += 1
             if progress_callback:
                 progress_callback(processed_count, total_months, month_name)
@@ -1136,16 +1220,31 @@ def process_single_parameter(aoi, start_date, end_date, parameter_type, temp_dir
             st.session_state.downloaded_months[parameter_type][month_name] = {
                 'wq_index': wq_path, 'rgb': rgb_path
             }
-            consecutive_failures = 0
+            consecutive_network = 0
+            consecutive_ratelimit = 0
         else:
-            consecutive_failures += 1
+            kind = _classify_failure(message)
+            if kind == 'network':
+                consecutive_network += 1
+                consecutive_ratelimit = 0
+            elif kind == 'ratelimit':
+                consecutive_ratelimit += 1
+                consecutive_network = 0
+            else:
+                # A problem with this month's tile, not with the connection:
+                # record it, move on, and let the run reach the good months.
+                consecutive_network = 0
+                consecutive_ratelimit = 0
 
         processed_count += 1
         if progress_callback:
             progress_callback(processed_count, total_months, month_name)
 
-        if consecutive_failures >= NETWORK_FAILURE_STREAK:
-            st.session_state.connection_interrupted = True
+        if consecutive_network >= NETWORK_FAILURE_STREAK:
+            _halt('network', message)
+            break
+        if consecutive_ratelimit >= RATE_LIMIT_FAILURE_STREAK:
+            _halt('ratelimit', message)
             break
 
     # ------------------------------------------------------------------
@@ -1191,6 +1290,8 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
       handler can pass it to a resume run later.
     """
     st.session_state.connection_interrupted = False
+    st.session_state.halt_reason = None
+    st.session_state.halt_detail = ""
     prune_old_cache_dirs()
 
     # Cache folder for this exact run (see get_cache_dir_for_config): the same
@@ -1311,10 +1412,17 @@ def run_full_analysis(aoi, start_date, end_date, cloudy_pixel_percentage=CLOUD_T
         # downloaded is on disk and in session state; the months that were never
         # attempted carry no status at all, so «ادامه از محل قطع» continues from
         # exactly this point rather than repeating earlier months.
-        stage_text.markdown(
-            "⛔ ارتباط با سرور قطع شد و پایش در همان نقطه متوقف شد — "
-            "ماه‌های دریافت‌شده حفظ شده‌اند."
-        )
+        if st.session_state.get('halt_reason') == 'ratelimit':
+            stage_text.markdown(
+                "⏳ سرویس گوگل ارث‌انجین موقتاً درخواست‌ها را محدود کرده است "
+                "(سهمیه/محدودیت نرخ) و پایش در همان نقطه متوقف شد — "
+                "ماه‌های دریافت‌شده حفظ شده‌اند."
+            )
+        else:
+            stage_text.markdown(
+                "⛔ ارتباط با سرور قطع شد و پایش در همان نقطه متوقف شد — "
+                "ماه‌های دریافت‌شده حفظ شده‌اند."
+            )
         st.session_state.resume_after_interruption = True
     else:
         progress_bar.progress(1.0)
@@ -5014,10 +5122,33 @@ def render_setup_page():
 
     # Hint when a partial run can be resumed
     if st.session_state.resume_after_interruption and not st.session_state.processing_in_progress:
-        st.warning(
-            "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
-            "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
-        )
+        if st.session_state.get('halt_reason') == 'ratelimit':
+            st.warning(
+                "⏳ پایش متوقف شد چون سرویس گوگل ارث‌انجین موقتاً درخواست‌ها را محدود کرده است "
+                "(این مشکلِ اینترنت شما نیست). چند دقیقه صبر کنید و سپس دکمه «ادامه از محل قطع» "
+                "را فشار دهید؛ ماه‌های دریافت‌شده حفظ شده‌اند."
+            )
+        else:
+            st.warning(
+                "⚠️ پایش به دلیل قطعی اینترنت متوقف شد. "
+                "پس از اتصال مجدد، دکمه «ادامه از محل قطع» را فشار دهید."
+            )
+
+        # The real error behind the stop, plus every month that failed and why.
+        # Without this the only thing the user could ever see was «قطعی اینترنت»,
+        # even when the cause was something else entirely.
+        detail = st.session_state.get('halt_detail') or ""
+        failed_rows = []
+        for _p in ALL_PARAMETERS:
+            for _m, _s in sorted(st.session_state.month_statuses.get(_p, {}).items()):
+                if _s.get('status') == STATUS_FAILED:
+                    failed_rows.append(f"- {param_persian_name(_p)} — {_m}: {_s.get('message', '')}")
+        if detail or failed_rows:
+            with st.expander("🔍 جزئیات فنی خطا (برای بررسی علت)", expanded=False):
+                if detail:
+                    st.code(detail)
+                if failed_rows:
+                    st.markdown("\n".join(failed_rows[:40]))
 
     # --- Run status + clear-results action, directly under the run buttons ---
     _render_status_strip()
