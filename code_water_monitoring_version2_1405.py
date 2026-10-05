@@ -1,16 +1,4 @@
-import os, glob, shutil, tempfile
 
-tmp = tempfile.gettempdir()
-targets = [
-    os.path.join(tmp, "wq_monitor_cache"),
-    os.path.join(os.path.expanduser("~"), ".wq_monitor_cache"),
-    os.path.join(os.getcwd(), ".wq_monitor_cache"),
-] + glob.glob(os.path.join(tmp, "tmp*"))
-
-for p in targets:
-    if os.path.isdir(p):
-        print("removing", p)
-        shutil.rmtree(p, ignore_errors=True)
 
 """
 Water Quality Monitoring Application
